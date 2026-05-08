@@ -1,0 +1,2414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Innovation Workshop · Doblin Ten Types</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233B82F6'/%3E%3Cpath d='M16 7l2.4 5.6L24 14l-5.6 2.4L16 22l-2.4-5.6L8 14l5.6-1.4L16 7z' fill='white'/%3E%3C/svg%3E">
+  <style>
+    html, body { margin: 0; padding: 0; background: #0A0E14; min-height: 100vh; }
+    .iw-loading {
+      color: #8B95A8;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+      padding: 4rem 2rem;
+      text-align: center;
+      font-size: 14px;
+      line-height: 1.6;
+      max-width: 460px;
+      margin: 0 auto;
+    }
+    .iw-loading h1 {
+      color: #E8ECF1;
+      font-size: 18px;
+      margin: 0 0 0.5rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .iw-loading .pulse {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #3B82F6;
+      margin-right: 8px;
+      animation: pulse 1.4s ease-in-out infinite;
+      vertical-align: middle;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; transform: scale(0.85); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+    .iw-error {
+      color: #F87171;
+      font-family: ui-monospace, "JetBrains Mono", monospace;
+      font-size: 12px;
+      max-width: 600px;
+      margin: 4rem auto;
+      padding: 1rem 1.5rem;
+      border: 1px solid #F8717140;
+      border-radius: 8px;
+      background: #1A2030;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="iw-loading">
+      <h1><span class="pulse"></span>Innovation Workshop</h1>
+      Loading the framework. The first launch caches dependencies — it may take 5–10 seconds. After that it's instant.
+    </div>
+  </div>
+
+  <!-- Map bare-module imports to esm.sh CDN -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+      "react-dom": "https://esm.sh/react-dom@18.3.1",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+      "recharts": "https://esm.sh/recharts@2.12.7?deps=react@18.3.1,react-dom@18.3.1",
+      "lucide-react": "https://esm.sh/lucide-react@0.383.0?deps=react@18.3.1"
+    }
+  }
+  </script>
+
+  <!-- Babel standalone transforms JSX to JS in the browser -->
+  <script src="https://unpkg.com/@babel/standalone@7.24.4/babel.min.js"></script>
+
+  <!-- Render error if the script crashes -->
+  <script>
+    window.addEventListener("error", (e) => {
+      const root = document.getElementById("root");
+      if (root && !root.querySelector('[data-iw-mounted]')) {
+        root.innerHTML = '<div class="iw-error"><strong>Could not load the workshop.</strong>\n\nMost likely causes:\n• The browser blocked the CDN (try a different network or browser).\n• The browser is too old (need a modern Chrome/Safari/Firefox/Edge from 2023 or later).\n\nDetails: ' + (e.message || "unknown error") + '</div>';
+      }
+    });
+  </script>
+
+  <script type="text/babel" data-type="module" data-presets="react">
+    import React, { useState, useEffect, useMemo, useRef } from "react";
+    import { createRoot } from "react-dom/client";
+    import {
+      BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+      ResponsiveContainer
+    } from "recharts";
+    import {
+      ChevronRight, ChevronLeft, Copy, Check, RotateCcw, Download,
+      Plus, X as XIcon, ChevronDown, ChevronUp, Sparkles, FileText,
+      CheckCircle2, Circle, Target, Layers, Zap
+    } from "lucide-react";
+
+    // ============================================================
+    // localStorage shim for window.storage (used by the workshop
+    // for cross-session persistence). The artifact runtime provides
+    // window.storage; in a browser we polyfill it with localStorage.
+    // ============================================================
+    if (!window.storage) {
+      window.storage = {
+        async get(key) {
+          try {
+            const v = localStorage.getItem(key);
+            return v !== null ? { value: v } : null;
+          } catch (e) { return null; }
+        },
+        async set(key, value) {
+          try { localStorage.setItem(key, String(value)); } catch (e) {}
+        },
+        async delete(key) {
+          try { localStorage.removeItem(key); } catch (e) {}
+        }
+      };
+    }
+
+    // ============================================================
+    // COMPONENT CODE — copied verbatim from innovation_workshop_45min.jsx
+    // (imports stripped, `export default` removed; rendered at bottom)
+    // ============================================================
+
+
+// ============================================================
+// DESIGN TOKENS
+// ============================================================
+
+const C = {
+  bg: "#0A0E14",
+  surface: "#131822",
+  surface2: "#1A2030",
+  surface3: "#222B3A",
+  surfaceHi: "#2A3447",
+  border: "rgba(255,255,255,0.06)",
+  borderMid: "rgba(255,255,255,0.10)",
+  borderHi: "rgba(255,255,255,0.18)",
+  text: "#E8ECF1",
+  textDim: "#8B95A8",
+  textMuted: "#5A6478",
+  accent: "#3B82F6",
+  accentBright: "#60A5FA",
+  accentDim: "rgba(59,130,246,0.14)",
+  config: "#A78BFA",
+  offering: "#34D399",
+  experience: "#FB923C",
+  success: "#34D399",
+  warning: "#FBBF24",
+  danger: "#F87171",
+};
+
+const CATEGORY_COLORS = {
+  Configuration: C.config,
+  Offering: C.offering,
+  Experience: C.experience,
+};
+
+// ============================================================
+// FRAMEWORK DATA
+// ============================================================
+
+const TYPE_INFO = {
+  "Profit Model":         { category: "Configuration", definition: "How the enterprise makes money — revenue model, pricing, margin architecture." },
+  "Network":              { category: "Configuration", definition: "How the enterprise connects with others to create value." },
+  "Structure":            { category: "Configuration", definition: "How the enterprise organizes its talent and assets." },
+  "Process":              { category: "Configuration", definition: "How the enterprise uses signature methods to do its work." },
+  "Product Performance":  { category: "Offering",      definition: "Distinguishing features and functionality of the core product." },
+  "Product System":       { category: "Offering",      definition: "Complementary products and services that create a coherent system." },
+  "Service":              { category: "Experience",    definition: "Support and enhancements that surround the offering." },
+  "Channel":              { category: "Experience",    definition: "How the offering is delivered to customers and users." },
+  "Brand":                { category: "Experience",    definition: "Representation of offerings and the enterprise to the world." },
+  "Customer Engagement":  { category: "Experience",    definition: "Distinctive interactions the company fosters with users." },
+};
+
+const TYPES_ORDER = [
+  "Profit Model", "Network", "Structure", "Process",
+  "Product Performance", "Product System",
+  "Service", "Channel", "Brand", "Customer Engagement",
+];
+
+const QUESTIONS = [
+  { type: "Profit Model", text: "Does the venture generate revenues in unique or different ways from competitors or industry norms?" },
+  { type: "Profit Model", text: "Are there compelling differences between who uses the offering and who pays?" },
+  { type: "Profit Model", text: "Does the company have multiple revenue streams from different stakeholders?" },
+  { type: "Profit Model", text: "Are margins higher relative to those of competitors?" },
+  { type: "Profit Model", text: "Are there significant differences in variable or fixed cost relative to competitors?" },
+  { type: "Profit Model", text: "Is the venture generating cash relatively quickly?" },
+  { type: "Profit Model", text: "Are working capital requirements relatively low?" },
+  { type: "Network", text: "Does the venture work with surprising or unusual partners to develop new offerings?" },
+  { type: "Network", text: "Does the venture have any unusual partnerships?" },
+  { type: "Network", text: "Does the venture complement other players by lending channels, processes, brand, or assets?" },
+  { type: "Network", text: "Does the venture collaborate with suppliers or customers to develop, test, or market products?" },
+  { type: "Structure", text: "Does the venture have a unique or unusual organizational structure?" },
+  { type: "Structure", text: "Does the venture use hard assets in differentiated ways from competitors?" },
+  { type: "Structure", text: "Is the company known for attracting top talent in particular functions or fields?" },
+  { type: "Structure", text: "Does the company have unique or unusual equity or profit-share programs with employees?" },
+  { type: "Process", text: "Does the venture have unique skills, methods, or capabilities competitors can't match?" },
+  { type: "Process", text: "Does the venture have unique IP, patents, or trade secrets around its methods?" },
+  { type: "Process", text: "Are the venture's variable costs substantially lower than competitors?" },
+  { type: "Process", text: "Is the venture's working capital substantially lower than competitors?" },
+  { type: "Product Performance", text: "Does the venture produce a real or perceived superior offering that earns a premium or dominates share?" },
+  { type: "Product Performance", text: "Are the products or services easier to use or simpler than competitors'?" },
+  { type: "Product Performance", text: "Are the products characterized by unique features and functionality that captivate customers?" },
+  { type: "Product Performance", text: "Are the products uniquely styled, designed, or focused on a particular niche?" },
+  { type: "Product System", text: "Does the venture make multiple products that complement or connect with each other in unique ways?" },
+  { type: "Product System", text: "Does the venture offer distinct products that can be integrated or bundled together?" },
+  { type: "Product System", text: "Does the venture offer distinct services that can be integrated or bundled together?" },
+  { type: "Product System", text: "Are other players creating products that interface with the venture's offerings?" },
+  { type: "Service", text: "Do customers evangelize the venture, especially when it makes them whole after problems?" },
+  { type: "Service", text: "Has the venture integrated seamless support — websites, help lines, etc. — that surface additional features?" },
+  { type: "Service", text: "Does the venture provide interesting or unique guarantees, warranties, or assurances?" },
+  { type: "Service", text: "Are there established communities that celebrate, promote, or enhance the service experience?" },
+  { type: "Channel", text: "Does the venture deliver offerings to customers in ways that confound or challenge industry norms?" },
+  { type: "Channel", text: "Does the venture use complementary channels in different ways?" },
+  { type: "Channel", text: "Do customers voluntarily talk with others about positive interactions with the firm?" },
+  { type: "Channel", text: "Do other players — partners, customers, competitors — help sell or deliver the offerings?" },
+  { type: "Brand", text: "Does the venture have a memorable and distinct identity relative to its competitors?" },
+  { type: "Brand", text: "Do customers and stakeholders see themselves as part of a community or movement around the brand?" },
+  { type: "Brand", text: "Do partners, customers, or competitors use the venture's brand as a selling point?" },
+  { type: "Brand", text: "Does the venture extend its brand to an unusually diverse group of businesses?" },
+  { type: "Brand", text: "Does the venture foster integration and connectivity across offerings through its brand?" },
+  { type: "Customer Engagement", text: "Does the company make traditionally complex, difficult, or arcane things easy to master?" },
+  { type: "Customer Engagement", text: "Do the offerings confer a sense of status, identity, or recognition to users?" },
+  { type: "Customer Engagement", text: "Do the offerings take on a life of their own or distinct identity in the world?" },
+  { type: "Customer Engagement", text: "Do customers describe how a product or service has become indispensable in their lives?" },
+];
+
+const WEIGHTS = {
+  "Profit Model": 0.4762,
+  "Network": 0.8333, "Structure": 0.8333, "Process": 0.8333,
+  "Product Performance": 0.8333, "Product System": 0.8333,
+  "Service": 0.8333, "Channel": 0.8333,
+  "Brand": 0.6666,
+  "Customer Engagement": 0.8333,
+};
+
+const TACTICS = [
+  { type: "Profit Model", name: "Premium", desc: "Price at higher margin, usually for a superior offering, experience, or brand." },
+  { type: "Profit Model", name: "Cost Leadership", desc: "Keep variable costs low and sell at high volume at low prices." },
+  { type: "Profit Model", name: "Scaled Transactions", desc: "Maximize margins by pursuing high-volume, large-scale transactions." },
+  { type: "Profit Model", name: "Microtransactions", desc: "Sell many items for as little as a dollar or a cent to drive impulse purchases." },
+  { type: "Profit Model", name: "Forced Scarcity", desc: "Limit supply to drive up demand and prices." },
+  { type: "Profit Model", name: "Subscription", desc: "Predictable cash flows by charging customers upfront for ongoing access." },
+  { type: "Profit Model", name: "Membership", desc: "Charge time-based payments for access to locations, offerings, or services." },
+  { type: "Profit Model", name: "Installed Base", desc: "Offer a 'core' product for slim margins; profit from add-ons or services." },
+  { type: "Profit Model", name: "Switchboard", desc: "Connect multiple sellers with multiple buyers; value compounds with adoption." },
+  { type: "Profit Model", name: "Auction", desc: "Allow the market to set the price for goods and services." },
+  { type: "Profit Model", name: "User-Defined", desc: "Invite customers to set the price they wish to pay." },
+  { type: "Profit Model", name: "Freemium", desc: "Offer basic services free; charge a premium for advanced features." },
+  { type: "Profit Model", name: "Flexible Pricing", desc: "Vary prices for an offering based on demand or other dynamic factors." },
+  { type: "Profit Model", name: "Float", desc: "Receive payment before building the offering and use the cash to earn interest." },
+  { type: "Profit Model", name: "Financing", desc: "Capture revenue through structured payment plans or post-sale interest." },
+  { type: "Profit Model", name: "Ad-Supported", desc: "Provide content or services free to users while charging advertisers." },
+  { type: "Profit Model", name: "Licensing", desc: "Grant another group permission to use your offering for a defined payment." },
+  { type: "Profit Model", name: "Metered Use", desc: "Allow customers to pay only for what they use." },
+  { type: "Profit Model", name: "Bundled Pricing", desc: "Sell two or more items together that could be sold separately." },
+  { type: "Profit Model", name: "Disaggregate Pricing", desc: "Allow customers to buy exactly — and only — what they want." },
+  { type: "Profit Model", name: "Risk Sharing", desc: "Waive or reduce fees if goals aren't met; gain higher rewards if they are." },
+  { type: "Network", name: "Merger / Acquisition", desc: "Combine two or more entities to gain access to capabilities or assets." },
+  { type: "Network", name: "Consolidation", desc: "Acquire multiple companies in the same or complementary markets." },
+  { type: "Network", name: "Open Innovation", desc: "Obtain access to processes or patents from other companies — or share your own." },
+  { type: "Network", name: "Secondary Markets", desc: "Connect waste streams, by-products, or alternatives into new value chains." },
+  { type: "Network", name: "Supply Chain Integration", desc: "Coordinate information and processes across the supply chain." },
+  { type: "Network", name: "Complementary Partnering", desc: "Share assets with companies serving similar markets but offering different products." },
+  { type: "Network", name: "Alliances", desc: "Share risks and revenues with partners to jointly improve competitive advantage." },
+  { type: "Network", name: "Franchising", desc: "License business principles, processes, and brand to external partners." },
+  { type: "Network", name: "Coopetition", desc: "Collaborate with competitors to achieve a common goal." },
+  { type: "Network", name: "Collaboration", desc: "Partner with others for mutual benefit." },
+  { type: "Structure", name: "Organizational Design", desc: "Make form follow function and align infrastructure with core qualities." },
+  { type: "Structure", name: "Incentive Systems", desc: "Offer financial or non-financial rewards to motivate desired behaviors." },
+  { type: "Structure", name: "IT Integration", desc: "Integrate technology, resources, and applications across the organization." },
+  { type: "Structure", name: "Competency Center", desc: "Cluster resources, practices, and expertise into support centers for efficiency." },
+  { type: "Structure", name: "Outsourcing", desc: "Assign responsibility for developing or maintaining a system to a vendor." },
+  { type: "Structure", name: "Corporate University", desc: "Provide job-specific or company-specific training for employees." },
+  { type: "Structure", name: "Decentralized Management", desc: "Distribute decision-making closer to the customer or business interface." },
+  { type: "Structure", name: "Knowledge Management", desc: "Share relevant information internally to reduce redundancy and boost performance." },
+  { type: "Structure", name: "Asset Standardization", desc: "Reduce costs and increase modularity by standardizing assets." },
+  { type: "Process", name: "Process Standardization", desc: "Use common products, processes, or policies to reduce complexity and cost." },
+  { type: "Process", name: "Localization", desc: "Adapt an offering, process, or experience to a target market or culture." },
+  { type: "Process", name: "Process Efficiency", desc: "Produce more using fewer materials, time, or energy." },
+  { type: "Process", name: "Flexible Manufacturing", desc: "Use production systems that respond quickly to changes while remaining efficient." },
+  { type: "Process", name: "Process Automation", desc: "Apply tools and infrastructure to manage routine activities." },
+  { type: "Process", name: "Crowdsourcing", desc: "Outsource repetitive or complex work to a large semi-organized group." },
+  { type: "Process", name: "On-Demand Production", desc: "Produce items only after orders are received to reduce inventory." },
+  { type: "Process", name: "Lean Production", desc: "Reduce waste and cost in manufacturing and other operations." },
+  { type: "Process", name: "Logistics Systems", desc: "Manage flow of goods, information, and resources from origin to use." },
+  { type: "Process", name: "Strategic Design", desc: "Employ a purposeful approach consistent across offerings, brands, and experiences." },
+  { type: "Process", name: "Intellectual Property", desc: "Protect ideas with patents, copyrights, or trade secrets." },
+  { type: "Process", name: "User Generated", desc: "Put your users to work creating and curating content that powers offerings." },
+  { type: "Process", name: "Predictive Analytics", desc: "Model past performance data to predict future outcomes." },
+  { type: "Product Performance", name: "Superior Product", desc: "Develop offerings of exceptional design, quality, or experience." },
+  { type: "Product Performance", name: "Ease of Use", desc: "Make products simple, intuitive, and comfortable for users." },
+  { type: "Product Performance", name: "Engaging Functionality", desc: "Provide an unexpected or newsworthy experiential component." },
+  { type: "Product Performance", name: "Safety", desc: "Increase customer confidence and security." },
+  { type: "Product Performance", name: "Feature Aggregation", desc: "Combine existing features from multiple offerings into a single offering." },
+  { type: "Product Performance", name: "Added Functionality", desc: "Add new functionality to enhance an existing offering." },
+  { type: "Product Performance", name: "Performance Simplification", desc: "Remove unnecessary details and interactions to reduce complexity." },
+  { type: "Product Performance", name: "Environmental Sensitivity", desc: "Provide offerings that minimize or reverse environmental harm." },
+  { type: "Product Performance", name: "Conservation", desc: "Design products so customers reduce their use of energy or materials." },
+  { type: "Product Performance", name: "Customization", desc: "Enable alteration of a product or service to fit individual needs." },
+  { type: "Product Performance", name: "Focus", desc: "Design specifically for a particular audience at the expense of others." },
+  { type: "Product Performance", name: "Styling", desc: "Impart a distinct aesthetic, fashion, or image to the product." },
+  { type: "Product System", name: "Complements", desc: "Sell related or ancillary products and services to enhance the main offering." },
+  { type: "Product System", name: "Extensions / Plug-ins", desc: "Allow first- or third-party additions to extend the product's capabilities." },
+  { type: "Product System", name: "Product Bundling", desc: "Offer multiple products together as a single product." },
+  { type: "Product System", name: "Modular Systems", desc: "Provide components that can be used independently or combined for greater utility." },
+  { type: "Product System", name: "Product / Service Platforms", desc: "Develop systems that connect partner products into an integrated ecosystem." },
+  { type: "Product System", name: "Integrated Offering", desc: "Combine separate components into a complete customer experience." },
+  { type: "Service", name: "Try Before You Buy", desc: "Let customers experience an offering before committing to invest." },
+  { type: "Service", name: "Guarantee", desc: "Remove customer risk by refunding or replacing unsatisfactory products." },
+  { type: "Service", name: "Loyalty Programs", desc: "Provide benefits or discounts to frequent or high-value customers." },
+  { type: "Service", name: "Added Value", desc: "Include additional features or services as part of the base offering." },
+  { type: "Service", name: "Concierge", desc: "Provide premium service by handling tasks for customers to save them time." },
+  { type: "Service", name: "Total Experience Management", desc: "Provide thoughtful, holistic management of the experience across the lifecycle." },
+  { type: "Service", name: "Supplementary Service", desc: "Offer ancillary services that fit with your core offering." },
+  { type: "Service", name: "Superior Service", desc: "Deliver service with higher quality, responsiveness, or empathy." },
+  { type: "Service", name: "Personalized Service", desc: "Use the customer's information to provide perfectly calibrated service." },
+  { type: "Service", name: "User Communities / Support", desc: "Provide communal or ongoing support for users." },
+  { type: "Service", name: "Lease or Loan", desc: "Let customers pay over time to lower upfront costs." },
+  { type: "Service", name: "Self-Service", desc: "Provide users with control over activities that would otherwise require a middleman." },
+  { type: "Channel", name: "Diversification", desc: "Add and expand into new or different channels." },
+  { type: "Channel", name: "Flagship Store", desc: "Create a store to showcase quintessential brand and product attributes." },
+  { type: "Channel", name: "Go Direct", desc: "Skip traditional retail channels and connect directly with customers." },
+  { type: "Channel", name: "Non-Traditional Channels", desc: "Employ novel and relevant avenues to reach customers." },
+  { type: "Channel", name: "Pop-up Presence", desc: "Create a noteworthy but temporary environment to showcase offerings." },
+  { type: "Channel", name: "Indirect Distribution", desc: "Use others as resellers or partners to reach more customers." },
+  { type: "Channel", name: "Multi-Level Marketing", desc: "Sell bulk or packaged goods to an affiliated sales force." },
+  { type: "Channel", name: "Cross-Selling", desc: "Place products or services in situations where customers are likely to want them." },
+  { type: "Channel", name: "On-Demand Delivery", desc: "Deliver products or services in real time, wherever needed." },
+  { type: "Channel", name: "Context-Specific", desc: "Provide timely, location- or situation-based access to offerings." },
+  { type: "Channel", name: "Experience Center", desc: "Space encouraging customer interaction; purchase happens through a lower-cost channel." },
+  { type: "Brand", name: "Co-Branding", desc: "Combine brands to reinforce key attributes and credibility." },
+  { type: "Brand", name: "Brand Leverage", desc: "Lend credibility and allow others to use your name to extend reach." },
+  { type: "Brand", name: "Private Label", desc: "Offer goods made by others under your brand." },
+  { type: "Brand", name: "Brand Extension", desc: "Introduce new products or services under an established brand." },
+  { type: "Brand", name: "Component Branding", desc: "Brand an integral component to make the entire offering more valuable." },
+  { type: "Brand", name: "Transparency", desc: "Let customers see into your operations and participate in your process." },
+  { type: "Brand", name: "Values Alignment", desc: "Have a brand stand for a big idea or set of consistent, authentic values." },
+  { type: "Brand", name: "Certification", desc: "Develop marks or guarantees that signify quality or standards." },
+  { type: "Customer Engagement", name: "Process Automation", desc: "Simplify by removing repetitive tasks; new experiences feel magical." },
+  { type: "Customer Engagement", name: "Experience Simplification", desc: "Reduce complexity; deliver specific experiences exceptionally well." },
+  { type: "Customer Engagement", name: "Curation", desc: "Use a distinctive point of view to guide customers toward better choices." },
+  { type: "Customer Engagement", name: "Experience Enabling", desc: "Extend the realm of what's possible to offer a previously improbable experience." },
+  { type: "Customer Engagement", name: "Mastery", desc: "Help customers gain great skill or deep knowledge of an activity or subject." },
+  { type: "Customer Engagement", name: "Autonomy and Authority", desc: "Grant users power to use offerings to shape their own experience." },
+  { type: "Customer Engagement", name: "Community and Belonging", desc: "Facilitate visceral connections; people feel part of a group or movement." },
+  { type: "Customer Engagement", name: "Personalization", desc: "Alter a standard offering so customers can project their identity." },
+  { type: "Customer Engagement", name: "Whimsy and Personality", desc: "Humanize offerings with on-brand flourishes that feel alive." },
+  { type: "Customer Engagement", name: "Status and Recognition", desc: "Provide cues that allow users to develop and nurture aspects of their identity." },
+];
+
+const PHASES = [
+  { num: "01", title: "The Company",          time: "1 min" },
+  { num: "02", title: "Deep Scoring",         time: "18 min" },
+  { num: "03", title: "First AI",             time: "4 min" },
+  { num: "04", title: "Second AI",            time: "4 min" },
+  { num: "05", title: "Triangulation",        time: "5 min" },
+  { num: "06", title: "Tactic Recs",          time: "11 min" },
+  { num: "07", title: "Take-Away",            time: "2 min" },
+];
+
+const STORAGE_KEY = "innovation_workshop_v3";
+
+const AI_OPTIONS = ["Claude", "ChatGPT", "Gemini", "Perplexity", "Other"];
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+const initialQuestionScores = () => {
+  const obj = {};
+  TYPES_ORDER.forEach(t => {
+    QUESTIONS.filter(q => q.type === t).forEach((_, i) => {
+      obj[`${t}:${i}`] = null;
+    });
+  });
+  return obj;
+};
+
+const initialTypeEvidence = () => {
+  const obj = {};
+  TYPES_ORDER.forEach(t => { obj[t] = ""; });
+  return obj;
+};
+
+const initialAIScores = () => {
+  const obj = {};
+  TYPES_ORDER.forEach(t => { obj[t] = null; });
+  return obj;
+};
+
+const computeTypeScore = (typeName, qs) => {
+  const w = WEIGHTS[typeName];
+  const idxs = QUESTIONS.map((q, i) => q.type === typeName ? i : -1).filter(i => i >= 0);
+  let sum = 0;
+  let scored = 0;
+  idxs.forEach(globalIdx => {
+    const localIdx = QUESTIONS.slice(0, globalIdx).filter(q => q.type === typeName).length;
+    const v = qs[`${typeName}:${localIdx}`];
+    if (typeof v === "number") {
+      sum += v * w;
+      scored++;
+    }
+  });
+  return { score: sum, scored, total: idxs.length };
+};
+
+const parseAIScores = (text) => {
+  const out = {};
+  TYPES_ORDER.forEach(t => { out[t] = null; });
+  if (!text) return out;
+  const lines = text.split(/\n/);
+  for (const line of lines) {
+    for (const t of TYPES_ORDER) {
+      const re = new RegExp(`^\\s*[\\*\\-•·]?\\s*\\*?\\*?${t.replace(/\s+/g, "\\s+")}\\*?\\*?\\s*[:\\-—]\\s*(\\d+(?:\\.\\d+)?)`, "i");
+      const m = line.match(re);
+      if (m) {
+        const v = parseFloat(m[1]);
+        if (!isNaN(v) && v >= 0 && v <= 10) out[t] = v;
+      }
+    }
+  }
+  return out;
+};
+
+const buildAIPrompt = (companyName, companyContext) => {
+  const ctx = companyContext.trim()
+    ? `\n\nContext provided by the team: ${companyContext.trim()}`
+    : "";
+  return `You are an expert innovation analyst. Score ${companyName || "[COMPANY NAME]"} on Larry Keeley's Doblin Ten Types of Innovation framework, based on publicly available information.${ctx}
+
+For each of the 10 types, give a score from 0 to 10:
+  0 = absent / no innovation visible in this type
+  5 = industry-normal
+  10 = industry-redefining
+
+Return your scores in this exact format, one per line, numbers only:
+
+Profit Model: X
+Network: X
+Structure: X
+Process: X
+Product Performance: X
+Product System: X
+Service: X
+Channel: X
+Brand: X
+Customer Engagement: X
+
+Then in a single short paragraph (3–4 sentences), name the company's BIGGEST innovation strength and BIGGEST gap, with one concrete piece of evidence for each.`;
+};
+
+const escapeHTML = (s) => String(s ?? "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
+// ============================================================
+// MAIN COMPONENT
+// ============================================================
+
+function InnovationWorkshop() {
+  const [phase, setPhase] = useState(0);
+  const [companyName, setCompanyName] = useState("");
+  const [companyContext, setCompanyContext] = useState("");
+  const [teamName, setTeamName] = useState("");
+
+  const [questionScores, setQuestionScores] = useState(initialQuestionScores());
+  const [typeEvidence, setTypeEvidence] = useState(initialTypeEvidence());
+
+  const [ai1Name, setAi1Name] = useState("Claude");
+  const [ai1Raw, setAi1Raw] = useState("");
+  const [ai1Scores, setAi1Scores] = useState(initialAIScores());
+
+  const [ai2Name, setAi2Name] = useState("ChatGPT");
+  const [ai2Raw, setAi2Raw] = useState("");
+  const [ai2Scores, setAi2Scores] = useState(initialAIScores());
+
+  const [tacticRecs, setTacticRecs] = useState([]);
+
+  const [copied1, setCopied1] = useState(false);
+  const [copied2, setCopied2] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [summaryCopied, setSummaryCopied] = useState(false);
+
+  // Load persisted
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get(STORAGE_KEY);
+        if (r && r.value) {
+          const s = JSON.parse(r.value);
+          if (s.companyName !== undefined) setCompanyName(s.companyName);
+          if (s.companyContext !== undefined) setCompanyContext(s.companyContext);
+          if (s.teamName !== undefined) setTeamName(s.teamName);
+          if (s.questionScores) setQuestionScores(s.questionScores);
+          if (s.typeEvidence) setTypeEvidence(s.typeEvidence);
+          if (s.ai1Name) setAi1Name(s.ai1Name);
+          if (s.ai1Raw) setAi1Raw(s.ai1Raw);
+          if (s.ai1Scores) setAi1Scores(s.ai1Scores);
+          if (s.ai2Name) setAi2Name(s.ai2Name);
+          if (s.ai2Raw) setAi2Raw(s.ai2Raw);
+          if (s.ai2Scores) setAi2Scores(s.ai2Scores);
+          if (s.tacticRecs) setTacticRecs(s.tacticRecs);
+          if (typeof s.phase === "number") setPhase(s.phase);
+        }
+      } catch (e) {}
+      setLoaded(true);
+    })();
+  }, []);
+
+  // Persist
+  useEffect(() => {
+    if (!loaded) return;
+    (async () => {
+      try {
+        await window.storage.set(STORAGE_KEY, JSON.stringify({
+          phase, companyName, companyContext, teamName,
+          questionScores, typeEvidence,
+          ai1Name, ai1Raw, ai1Scores, ai2Name, ai2Raw, ai2Scores,
+          tacticRecs,
+        }));
+      } catch (e) {}
+    })();
+  }, [phase, companyName, companyContext, teamName, questionScores, typeEvidence,
+      ai1Name, ai1Raw, ai1Scores, ai2Name, ai2Raw, ai2Scores, tacticRecs, loaded]);
+
+  // Re-parse AI raw on change
+  useEffect(() => { setAi1Scores(parseAIScores(ai1Raw)); }, [ai1Raw]);
+  useEffect(() => { setAi2Scores(parseAIScores(ai2Raw)); }, [ai2Raw]);
+
+  // Computed
+  const teamTypeScores = useMemo(() => {
+    const obj = {};
+    TYPES_ORDER.forEach(t => { obj[t] = computeTypeScore(t, questionScores); });
+    return obj;
+  }, [questionScores]);
+
+  const teamComplete = useMemo(() => {
+    return TYPES_ORDER.every(t => teamTypeScores[t].scored === teamTypeScores[t].total);
+  }, [teamTypeScores]);
+
+  const ai1Complete = useMemo(() => TYPES_ORDER.every(t => typeof ai1Scores[t] === "number"), [ai1Scores]);
+  const ai2Complete = useMemo(() => TYPES_ORDER.every(t => typeof ai2Scores[t] === "number"), [ai2Scores]);
+
+  const teamAvg = useMemo(() => {
+    const vals = TYPES_ORDER.map(t => teamTypeScores[t].scored === teamTypeScores[t].total ? teamTypeScores[t].score : null).filter(v => v !== null);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  }, [teamTypeScores]);
+
+  const ai1Avg = useMemo(() => {
+    const vals = TYPES_ORDER.map(t => ai1Scores[t]).filter(v => typeof v === "number");
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  }, [ai1Scores]);
+
+  const ai2Avg = useMemo(() => {
+    const vals = TYPES_ORDER.map(t => ai2Scores[t]).filter(v => typeof v === "number");
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  }, [ai2Scores]);
+
+  const triangulation = useMemo(() => {
+    const items = TYPES_ORDER.map(t => {
+      const team = teamTypeScores[t].scored === teamTypeScores[t].total ? teamTypeScores[t].score : null;
+      const a1 = ai1Scores[t];
+      const a2 = ai2Scores[t];
+      if (team == null || typeof a1 !== "number" || typeof a2 !== "number") return null;
+      const aiAvg = (a1 + a2) / 2;
+      return {
+        type: t,
+        team, ai1: a1, ai2: a2,
+        aiAvg,
+        teamVsAI: team - aiAvg,
+        aiSpread: Math.abs(a1 - a2),
+        spread: Math.max(team, a1, a2) - Math.min(team, a1, a2),
+      };
+    }).filter(Boolean);
+    return items;
+  }, [teamTypeScores, ai1Scores, ai2Scores]);
+
+  const handleReset = async () => {
+    if (!window.confirm("Reset everything? This will clear all scores, evidence, AI responses, and tactic recommendations.")) return;
+    setPhase(0);
+    setCompanyName(""); setCompanyContext(""); setTeamName("");
+    setQuestionScores(initialQuestionScores());
+    setTypeEvidence(initialTypeEvidence());
+    setAi1Name("Claude"); setAi1Raw(""); setAi1Scores(initialAIScores());
+    setAi2Name("ChatGPT"); setAi2Raw(""); setAi2Scores(initialAIScores());
+    setTacticRecs([]);
+    try { await window.storage.delete(STORAGE_KEY); } catch (e) {}
+  };
+
+  // ============================================================
+  // EXPORT — Word doc (HTML+MSO) + plain-text fallback
+  // ============================================================
+
+  const buildWordHTML = () => {
+    const dateStr = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    const catColorHex = (cat) => ({ Configuration: "#7C3AED", Offering: "#059669", Experience: "#EA580C" })[cat];
+
+    const scoreRows = TYPES_ORDER.map(t => {
+      const team = teamTypeScores[t];
+      const teamStr = team.scored === team.total ? team.score.toFixed(2) : "—";
+      const a1 = typeof ai1Scores[t] === "number" ? ai1Scores[t].toFixed(2) : "—";
+      const a2 = typeof ai2Scores[t] === "number" ? ai2Scores[t].toFixed(2) : "—";
+      const cat = TYPE_INFO[t].category;
+      return `<tr>
+        <td><strong>${escapeHTML(t)}</strong></td>
+        <td><span style="color:${catColorHex(cat)};font-size:9pt;font-weight:600;">${cat}</span></td>
+        <td class="num">${teamStr}</td>
+        <td class="num">${a1}</td>
+        <td class="num">${a2}</td>
+      </tr>`;
+    }).join("\n");
+
+    const tacticBlocks = tacticRecs.length ? tacticRecs.map((r, i) => {
+      const cat = TYPE_INFO[r.type].category;
+      const cc = catColorHex(cat);
+      return `<div style="border-left:3pt solid ${cc};padding:8pt 14pt;margin:8pt 0;background:#F8FAFC;">
+        <div style="font-size:9pt;color:#64748B;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2pt;">${String(i+1).padStart(2,"0")} · ${escapeHTML(r.type)} · <span style="color:${cc};">${cat}</span></div>
+        <div style="font-size:13pt;font-weight:600;color:#0F172A;margin-bottom:4pt;">${escapeHTML(r.name)}</div>
+        <div style="font-size:11pt;color:#334155;font-style:italic;">${escapeHTML(r.justification || "(no justification recorded)")}</div>
+      </div>`;
+    }).join("\n") : `<p style="color:#64748B;font-style:italic;">No tactics recorded.</p>`;
+
+    const detailedSections = TYPES_ORDER.map(t => {
+      const cat = TYPE_INFO[t].category;
+      const cc = catColorHex(cat);
+      const qs = QUESTIONS.filter(q => q.type === t);
+      const team = teamTypeScores[t];
+      const teamStr = team.scored === team.total ? team.score.toFixed(2) : "—";
+      const qRows = qs.map((q, i) => {
+        const v = questionScores[`${t}:${i}`];
+        return `<tr><td style="width:36pt;"><strong>Q${i+1}</strong></td><td>${escapeHTML(q.text)}</td><td class="num" style="width:42pt;">${typeof v === "number" ? `${v}/3` : "—"}</td></tr>`;
+      }).join("\n");
+      const evidenceRow = typeEvidence[t]
+        ? `<p style="font-size:10pt;color:#475569;margin-top:4pt;"><strong style="color:${cc};">Evidence:</strong> <em>${escapeHTML(typeEvidence[t])}</em></p>`
+        : "";
+      return `<h3 style="color:${cc};">${escapeHTML(t)} <span style="font-size:10pt;color:#94A3B8;font-weight:normal;">· ${cat} · ${teamStr}/10</span></h3>
+        <table>${qRows}</table>
+        ${evidenceRow}`;
+    }).join("\n");
+
+    // ----- Triangulation section -----
+    const teamColorHex = "#EA580C";
+    const ai1ColorHex = "#059669";
+    const ai2ColorHex = "#7C3AED";
+
+    // Pull score arrays for each source; nulls excluded from stats
+    const teamScoresArr = TYPES_ORDER.map(t => teamTypeScores[t].scored === teamTypeScores[t].total ? teamTypeScores[t].score : null).filter(v => v !== null);
+    const ai1ScoresArr = TYPES_ORDER.map(t => ai1Scores[t]).filter(v => typeof v === "number");
+    const ai2ScoresArr = TYPES_ORDER.map(t => ai2Scores[t]).filter(v => typeof v === "number");
+
+    const stdDev = (vals) => {
+      if (vals.length < 2) return null;
+      const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const variance = vals.reduce((s, v) => s + (v - m) ** 2, 0) / (vals.length - 1);
+      return Math.sqrt(variance);
+    };
+
+    const teamSD = stdDev(teamScoresArr);
+    const ai1SD = stdDev(ai1ScoresArr);
+    const ai2SD = stdDev(ai2ScoresArr);
+
+    const fmt = (v) => v !== null && v !== undefined && !isNaN(v) ? v.toFixed(2) : "—";
+
+    const avgTile = (label, value, sd, color) => `
+      <td style="width:33.3%;border-top:2pt solid ${color};padding:10pt 14pt;background:#F8FAFC;">
+        <div style="font-size:9pt;color:#64748B;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin-bottom:3pt;">${label}</div>
+        <div style="font-size:22pt;color:${color};font-family:Consolas,monospace;font-weight:600;line-height:1.1;">${fmt(value)}<span style="font-size:11pt;color:#94A3B8;font-weight:400;">/10</span></div>
+        <div style="font-size:9pt;color:#64748B;font-family:Consolas,monospace;margin-top:5pt;">SD <strong style="color:#475569;">${fmt(sd)}</strong></div>
+      </td>`;
+
+    const avgsRow = `
+      <table style="width:100%;border-collapse:separate;border-spacing:6pt 0;margin:8pt 0 14pt;">
+        <tr>
+          ${avgTile("Team", teamAvg, teamSD, teamColorHex)}
+          ${avgTile(`${escapeHTML(ai1Name)}`, ai1Avg, ai1SD, ai1ColorHex)}
+          ${avgTile(`${escapeHTML(ai2Name)}`, ai2Avg, ai2SD, ai2ColorHex)}
+        </tr>
+      </table>`;
+
+    // Vertical bar chart — 10 type groups, 3 bars per group (Team / AI1 / AI2)
+    const CHART_H = 150;        // pt — bar area height
+    const BAR_W = 11;           // pt — width of each colored bar
+    const INNER_GAP = 1;        // pt — gap between the 3 bars within a type group
+    const GROUP_GAP = 7;        // pt — gap between type groups
+
+    const SHORT_LABELS = {
+      "Profit Model": "Profit<br/>Model",
+      "Network": "Network",
+      "Structure": "Structure",
+      "Process": "Process",
+      "Product Performance": "Product<br/>Performance",
+      "Product System": "Product<br/>System",
+      "Service": "Service",
+      "Channel": "Channel",
+      "Brand": "Brand",
+      "Customer Engagement": "Customer<br/>Engagement",
+    };
+
+    const verticalBar = (val, color) => {
+      const v = typeof val === "number" ? val : 0;
+      const filled = Math.max(0, (v / 10) * CHART_H);
+      const empty = CHART_H - filled;
+      const labelStr = typeof val === "number" ? val.toFixed(1) : "—";
+      return `<td style="vertical-align:bottom;padding:0 ${INNER_GAP}pt;">
+        <div style="font-size:7pt;text-align:center;color:${color};font-family:Consolas,monospace;font-weight:600;line-height:1;margin-bottom:2pt;">${labelStr}</div>
+        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:${BAR_W}pt;">
+          <tr><td style="height:${empty.toFixed(1)}pt;line-height:${empty.toFixed(1)}pt;font-size:1pt;mso-line-height-rule:exactly;">&nbsp;</td></tr>
+          <tr><td style="height:${filled.toFixed(1)}pt;line-height:${filled.toFixed(1)}pt;font-size:1pt;background:${color};mso-line-height-rule:exactly;border-top:0.5pt solid ${color};">&nbsp;</td></tr>
+        </table>
+      </td>`;
+    };
+
+    const groupCells = TYPES_ORDER.map((t, idx) => {
+      const team = teamTypeScores[t].scored === teamTypeScores[t].total ? teamTypeScores[t].score : null;
+      const a1 = ai1Scores[t];
+      const a2 = ai2Scores[t];
+      const padLeft = idx === 0 ? 0 : GROUP_GAP;
+      return `<td style="vertical-align:bottom;padding:0 0 0 ${padLeft}pt;">
+        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>
+          ${verticalBar(team, teamColorHex)}
+          ${verticalBar(a1, ai1ColorHex)}
+          ${verticalBar(a2, ai2ColorHex)}
+        </tr></table>
+      </td>`;
+    }).join("");
+
+    const labelCells = TYPES_ORDER.map((t, idx) => {
+      const padLeft = idx === 0 ? 0 : GROUP_GAP;
+      return `<td style="text-align:center;vertical-align:top;padding:5pt ${padLeft / 2}pt 0 ${padLeft / 2}pt;font-size:7.5pt;color:#475569;line-height:1.2;">${SHORT_LABELS[t]}</td>`;
+    }).join("");
+
+    const legendSwatch = (color, name) => `<span style="display:inline-block;margin-right:14pt;font-size:9pt;color:#475569;"><span style="display:inline-block;width:9pt;height:9pt;background:${color};vertical-align:middle;margin-right:4pt;border:0.5pt solid ${color};"></span>${escapeHTML(name)}</span>`;
+
+    const chartTable = `
+      <div style="margin:6pt 0 6pt 0;">
+        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0 auto;">
+          <tr style="height:${CHART_H + 12}pt;">${groupCells}</tr>
+          <tr>${labelCells}</tr>
+        </table>
+        <div style="text-align:center;margin-top:6pt;">
+          ${legendSwatch(teamColorHex, "Team")}
+          ${legendSwatch(ai1ColorHex, ai1Name)}
+          ${legendSwatch(ai2ColorHex, ai2Name)}
+        </div>
+      </div>`;
+
+    // Pattern analysis — only types where all three sources have scored
+    const consensusItems = triangulation.filter(i => i.spread <= 1.5).sort((a, b) => b.team - a.team).slice(0, 4);
+    const teamVsAIsItems = [...triangulation].sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI)).slice(0, 3);
+    const aisDisagreeItems = [...triangulation].sort((a, b) => b.aiSpread - a.aiSpread).slice(0, 3);
+
+    const patternItem = (item, note) => `
+      <div style="padding:5pt 0;border-bottom:0.25pt solid #E2E8F0;">
+        <div style="font-size:10pt;font-weight:600;color:#0F172A;">${escapeHTML(item.type)}</div>
+        <div style="font-size:9pt;font-family:Consolas,monospace;color:#64748B;margin-top:2pt;">
+          Team:&nbsp;<strong style="color:${teamColorHex};">${item.team.toFixed(1)}</strong>
+          &nbsp;·&nbsp;${escapeHTML(ai1Name)}:&nbsp;<strong style="color:${ai1ColorHex};">${item.ai1.toFixed(1)}</strong>
+          &nbsp;·&nbsp;${escapeHTML(ai2Name)}:&nbsp;<strong style="color:${ai2ColorHex};">${item.ai2.toFixed(1)}</strong>
+          ${note ? `&nbsp;&nbsp;<span style="color:#475569;font-style:italic;">— ${escapeHTML(note)}</span>` : ""}
+        </div>
+        ${typeEvidence[item.type] ? `<div style="font-size:9pt;font-style:italic;color:#475569;margin-top:3pt;">"${escapeHTML(typeEvidence[item.type])}"</div>` : ""}
+      </div>`;
+
+    const patternBlock = (title, subtitle, color, items, noteFn) => `
+      <div style="padding:8pt 12pt;border:0.5pt solid #E2E8F0;border-left:2pt solid ${color};background:#F8FAFC;margin:6pt 0;">
+        <div style="display:block;margin-bottom:2pt;">
+          <span style="font-size:10pt;font-weight:600;color:${color};letter-spacing:0.04em;text-transform:uppercase;">${title}</span>
+          <span style="font-size:9pt;color:#94A3B8;margin-left:6pt;">— ${subtitle}</span>
+        </div>
+        ${items.length === 0
+          ? `<div style="font-size:9pt;color:#94A3B8;font-style:italic;padding:3pt 0;">None.</div>`
+          : items.map(item => patternItem(item, noteFn ? noteFn(item) : null)).join("")}
+      </div>`;
+
+    const patternsTable = `
+      ${patternBlock("Consensus", "All three within 1.5 points", "#059669", consensusItems, null)}
+      ${patternBlock("Team vs. AIs", "Team disagrees with AI consensus", "#EA580C", teamVsAIsItems, c => `Team ${c.teamVsAI > 0 ? "higher" : "lower"} by ${Math.abs(c.teamVsAI).toFixed(1)}`)}
+      ${patternBlock("AIs Disagree", `${ai1Name} vs ${ai2Name}`, "#7C3AED", aisDisagreeItems, c => `AI spread: ${c.aiSpread.toFixed(1)}`)}`;
+
+    const triangulationSection = triangulation.length > 0 ? `
+<h2>Triangulation</h2>
+<p style="font-size:10pt;color:#64748B;margin:0 0 4pt;">Three perspectives on ${escapeHTML(companyName || "the company")}'s innovation profile — the team's collective scoring, ${escapeHTML(ai1Name)}'s independent assessment, and ${escapeHTML(ai2Name)}'s.</p>
+
+<h3 style="margin-top:14pt;font-size:11pt;color:#0F172A;">Average Scores by Source</h3>
+${avgsRow}
+
+<h3 style="font-size:11pt;color:#0F172A;">Score by Type · Three-Way Comparison</h3>
+${chartTable}
+
+<h3 style="font-size:11pt;color:#0F172A;page-break-after:avoid;mso-page-break-after:avoid;">Pattern Analysis</h3>
+<div style="page-break-inside:avoid;mso-page-break-inside:avoid;">
+${patternsTable}
+</div>
+` : `
+<h2>Triangulation</h2>
+<p style="font-size:10pt;color:#64748B;font-style:italic;">Triangulation requires complete scoring from the team and both AI analysts. This section is empty because at least one source did not score every type.</p>
+`;
+
+    return `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+<head>
+<meta charset='utf-8'>
+<title>${escapeHTML(companyName || "Innovation Analysis")} — Innovation Workshop</title>
+<!--[if gte mso 9]>
+<xml>
+<w:WordDocument>
+<w:View>Print</w:View>
+<w:Zoom>100</w:Zoom>
+<w:DoNotOptimizeForBrowser/>
+</w:WordDocument>
+</xml>
+<![endif]-->
+<style>
+@page WordSection1 { size: 8.5in 11in; mso-page-orientation: portrait; margin: 1.0in 1.0in 1.0in 1.0in; }
+div.WordSection1 { page: WordSection1; }
+body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1E293B; }
+h1 { font-size: 26pt; color: #0F172A; margin: 0 0 4pt; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 16pt; color: #0F172A; margin: 22pt 0 8pt; font-weight: 600; padding-bottom: 4pt; border-bottom: 1pt solid #E2E8F0; }
+h3 { font-size: 12pt; margin: 14pt 0 4pt; font-weight: 600; }
+.subtitle { font-size: 12pt; color: #475569; margin: 4pt 0 2pt; font-weight: 500; }
+.meta { font-size: 9pt; color: #94A3B8; letter-spacing: 0.04em; }
+.brand { font-size: 9pt; color: #3B82F6; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; margin-bottom: 8pt; }
+table { border-collapse: collapse; margin: 6pt 0 12pt; width: 100%; }
+table.scores th { background: #0F172A; color: white; padding: 7pt 10pt; text-align: left; font-size: 10pt; font-weight: 600; }
+table.scores td { padding: 6pt 10pt; border-bottom: 0.5pt solid #E2E8F0; font-size: 10.5pt; }
+.num { font-family: Consolas, monospace; text-align: right; font-variant-numeric: tabular-nums; }
+table:not(.scores) td { padding: 4pt 8pt; border-bottom: 0.25pt solid #F1F5F9; font-size: 10pt; }
+.totals-row { background: #F8FAFC; font-weight: 600; }
+.callout { padding: 10pt 14pt; background: #EFF6FF; border-left: 3pt solid #3B82F6; margin: 8pt 0; font-size: 10.5pt; color: #1E3A8A; }
+.ai-block { background: #F8FAFC; border: 0.5pt solid #E2E8F0; padding: 8pt 10pt; font-family: Consolas, monospace; font-size: 9pt; white-space: pre-wrap; color: #334155; }
+ul { margin: 4pt 0 8pt; padding-left: 22pt; }
+.footer-note { margin-top: 24pt; padding-top: 8pt; border-top: 0.5pt solid #E2E8F0; font-size: 9pt; color: #94A3B8; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="WordSection1">
+
+<div class="brand">Innovation Workshop · Doblin Ten Types</div>
+<h1>${escapeHTML(companyName || "Innovation Analysis")}</h1>
+<p class="subtitle">${teamName ? `Team: ${escapeHTML(teamName)} · ` : ""}Three-way assessment</p>
+<p class="meta">Generated ${escapeHTML(dateStr)} · Sources: Team scoring (43 questions), ${escapeHTML(ai1Name)}, ${escapeHTML(ai2Name)}</p>
+
+${companyContext.trim() ? `<div class="callout"><strong>Scoring context:</strong> ${escapeHTML(companyContext.trim())}</div>` : ""}
+
+<h2>Score Comparison · 0–10 Scale</h2>
+<table class="scores">
+<tr><th>Innovation Type</th><th>Category</th><th class="num">Team</th><th class="num">${escapeHTML(ai1Name)}</th><th class="num">${escapeHTML(ai2Name)}</th></tr>
+${scoreRows}
+<tr class="totals-row">
+  <td colspan="2"><strong>Average</strong></td>
+  <td class="num">${teamAvg !== null ? teamAvg.toFixed(2) : "—"}</td>
+  <td class="num">${ai1Avg !== null ? ai1Avg.toFixed(2) : "—"}</td>
+  <td class="num">${ai2Avg !== null ? ai2Avg.toFixed(2) : "—"}</td>
+</tr>
+<tr class="totals-row">
+  <td colspan="2"><strong>Std Dev</strong></td>
+  <td class="num">${fmt(teamSD)}</td>
+  <td class="num">${fmt(ai1SD)}</td>
+  <td class="num">${fmt(ai2SD)}</td>
+</tr>
+</table>
+
+${triangulationSection}
+
+<h2>Recommended Tactics</h2>
+${tacticBlocks}
+
+<h2>Detailed Question-Level Scoring</h2>
+<p style="font-size:10pt;color:#64748B;margin-top:0;">Each question scored 0 (none), 1 (low), 2 (medium), 3 (high). Type scores normalize to 0–10.</p>
+${detailedSections}
+
+<h2>AI Analyst Responses</h2>
+<h3>${escapeHTML(ai1Name)}</h3>
+<div class="ai-block">${escapeHTML(ai1Raw || "(none)")}</div>
+<h3>${escapeHTML(ai2Name)}</h3>
+<div class="ai-block">${escapeHTML(ai2Raw || "(none)")}</div>
+
+<p class="footer-note">Adapted from Keeley, Pikkel, Quinn &amp; Walters · Ten Types of Innovation · 2013</p>
+
+</div>
+</body>
+</html>`;
+  };
+
+  const buildPlainText = () => {
+    const lines = [];
+    lines.push(`INNOVATION WORKSHOP — TEAM SUMMARY`);
+    lines.push(`Company: ${companyName || "(unnamed)"}`);
+    if (teamName) lines.push(`Team: ${teamName}`);
+    lines.push(`Generated: ${new Date().toLocaleString()}`);
+    lines.push("");
+    lines.push(`SCORES (0-10)`);
+    lines.push(`Type                          Team    ${ai1Name.padEnd(8)} ${ai2Name.padEnd(8)}`);
+    lines.push(`-------------------------------------------------------------`);
+    TYPES_ORDER.forEach(t => {
+      const team = teamTypeScores[t];
+      const teamStr = team.scored === team.total ? team.score.toFixed(2) : "—";
+      const a1 = typeof ai1Scores[t] === "number" ? ai1Scores[t].toFixed(2) : "—";
+      const a2 = typeof ai2Scores[t] === "number" ? ai2Scores[t].toFixed(2) : "—";
+      lines.push(`${t.padEnd(28)}  ${teamStr.padStart(5)}   ${a1.padStart(6)}   ${a2.padStart(6)}`);
+    });
+    lines.push("");
+    lines.push(`AVERAGES`);
+    if (teamAvg !== null) lines.push(`Team:   ${teamAvg.toFixed(2)}`);
+    if (ai1Avg !== null) lines.push(`${ai1Name}: ${ai1Avg.toFixed(2)}`);
+    if (ai2Avg !== null) lines.push(`${ai2Name}: ${ai2Avg.toFixed(2)}`);
+    lines.push("");
+    lines.push(`TACTIC RECOMMENDATIONS`);
+    if (!tacticRecs.length) lines.push("(none recorded)");
+    tacticRecs.forEach((r, i) => {
+      lines.push(`\n${i+1}. ${r.type} — ${r.name}`);
+      lines.push(`   Justification: ${r.justification || "(none recorded)"}`);
+    });
+    lines.push("");
+    lines.push(`PER-QUESTION SCORES`);
+    TYPES_ORDER.forEach(t => {
+      lines.push(`\n${t}:`);
+      const qs = QUESTIONS.filter(q => q.type === t);
+      qs.forEach((q, i) => {
+        const v = questionScores[`${t}:${i}`];
+        lines.push(`  Q${i+1} [${typeof v === "number" ? v : "—"}/3]  ${q.text}`);
+      });
+      if (typeEvidence[t]) lines.push(`  Evidence: ${typeEvidence[t]}`);
+    });
+    return lines.join("\n");
+  };
+
+  const downloadSummary = () => {
+    setSummaryCopied(false);
+    setSummaryOpen(true);
+  };
+
+  const safeName = () => (companyName || "company").replace(/[^a-z0-9]/gi, "_").toLowerCase();
+
+  const downloadAsWord = () => {
+    try {
+      const html = buildWordHTML();
+      const blob = new Blob(["\ufeff", html], { type: "application/msword;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `innovation_workshop_${safeName()}.doc`;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        if (document.body.contains(a)) document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+    } catch (e) {}
+  };
+
+  const downloadAsText = () => {
+    try {
+      const blob = new Blob([buildPlainText()], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `innovation_workshop_${safeName()}.txt`;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        if (document.body.contains(a)) document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+    } catch (e) {}
+  };
+
+  const copyAsText = async () => {
+    try {
+      await navigator.clipboard.writeText(buildPlainText());
+      setSummaryCopied(true);
+      setTimeout(() => setSummaryCopied(false), 2000);
+    } catch (e) {
+      setSummaryCopied(false);
+    }
+  };
+
+  // ============================================================
+  // RENDER
+  // ============================================================
+
+  return (
+    <div style={{
+      fontFamily: '"Inter", system-ui, -apple-system, sans-serif',
+      backgroundColor: C.bg,
+      color: C.text,
+      minHeight: "100vh",
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+        body { font-feature-settings: "cv11", "ss01"; }
+        .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace; letter-spacing: -0.01em; }
+        .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: ${C.textDim}; font-weight: 500; }
+        .iw-input { background: ${C.surface2}; color: ${C.text}; border: 1px solid ${C.borderMid}; border-radius: 8px; padding: 0.65rem 0.85rem; font-family: inherit; font-size: 0.95rem; outline: none; transition: all 0.15s; width: 100%; }
+        .iw-input:focus { border-color: ${C.accent}; box-shadow: 0 0 0 3px ${C.accentDim}; }
+        .iw-input::placeholder { color: ${C.textMuted}; }
+        textarea.iw-input { resize: vertical; line-height: 1.5; font-family: inherit; }
+        .iw-select { background: ${C.surface2}; color: ${C.text}; border: 1px solid ${C.borderMid}; border-radius: 8px; padding: 0.5rem 0.7rem; font-family: "JetBrains Mono", monospace; font-size: 12px; cursor: pointer; outline: none; }
+        .iw-select:focus { border-color: ${C.accent}; }
+        .seg-btn { transition: all 0.12s; }
+        .seg-btn:hover:not(:disabled) { background: ${C.surface3} !important; border-color: ${C.borderHi} !important; }
+        .recharts-cartesian-axis-tick text { font-family: "JetBrains Mono", monospace; font-size: 10px; fill: ${C.textDim}; }
+        .recharts-legend-item-text { font-family: "JetBrains Mono", monospace !important; font-size: 11px !important; color: ${C.text} !important; }
+        .recharts-default-tooltip { background: ${C.surface2} !important; border: 1px solid ${C.borderHi} !important; border-radius: 8px !important; font-family: "Inter", sans-serif !important; }
+        .recharts-tooltip-label { color: ${C.text} !important; font-weight: 600 !important; }
+        .recharts-tooltip-item { color: ${C.text} !important; }
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: ${C.bg}; }
+        ::-webkit-scrollbar-thumb { background: ${C.surface3}; border-radius: 5px; }
+        ::-webkit-scrollbar-thumb:hover { background: ${C.surfaceHi}; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.25s ease-out; }
+      `}</style>
+
+      {/* Header */}
+      <header style={{
+        position: "sticky", top: 0, zIndex: 50,
+        backgroundColor: "rgba(10,14,20,0.85)",
+        backdropFilter: "blur(12px)",
+        borderBottom: `1px solid ${C.border}`,
+        padding: "0.85rem 1.5rem",
+      }}>
+        <div style={{ maxWidth: "1320px", margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <div style={{
+              width: "32px", height: "32px",
+              background: `linear-gradient(135deg, ${C.accent} 0%, ${C.config} 100%)`,
+              borderRadius: "8px",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: `0 0 20px ${C.accentDim}`,
+            }}>
+              <Sparkles size={16} color="white" strokeWidth={2.5} />
+            </div>
+            <div>
+              <div style={{ fontSize: "14px", fontWeight: 600, lineHeight: 1.1, color: C.text }}>
+                Innovation Workshop
+              </div>
+              <div className="mono" style={{ fontSize: "10px", color: C.textDim, marginTop: "1px" }}>
+                Doblin Ten Types · 45 min
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            {companyName && (
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.4rem 0.75rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderRadius: "999px" }}>
+                <Target size={12} color={C.accentBright} />
+                <span style={{ fontSize: "12px", fontWeight: 500, color: C.text }}>{companyName}</span>
+                {teamName && <span style={{ fontSize: "11px", color: C.textDim }}>· {teamName}</span>}
+              </div>
+            )}
+            <button onClick={handleReset} style={{
+              padding: "0.4rem 0.75rem",
+              backgroundColor: "transparent",
+              color: C.textDim,
+              border: `1px solid ${C.border}`,
+              borderRadius: "999px",
+              fontSize: "11px",
+              fontWeight: 500,
+              cursor: "pointer",
+              display: "flex", alignItems: "center", gap: "0.35rem",
+              transition: "all 0.15s",
+            }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.borderHi; e.currentTarget.style.color = C.text; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textDim; }}
+            >
+              <RotateCcw size={11} /> Reset
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Phase nav */}
+      <nav style={{
+        padding: "0.85rem 1.5rem",
+        borderBottom: `1px solid ${C.border}`,
+        backgroundColor: C.bg,
+        overflowX: "auto",
+      }}>
+        <div style={{ maxWidth: "1320px", margin: "0 auto", display: "flex", gap: "0.4rem", flexWrap: "nowrap", minWidth: "min-content" }}>
+          {PHASES.map((p, i) => {
+            const isActive = i === phase;
+            const isDone = i < phase;
+            return (
+              <button
+                key={i}
+                onClick={() => setPhase(i)}
+                style={{
+                  padding: "0.5rem 0.85rem",
+                  border: `1px solid ${isActive ? C.accent : isDone ? C.borderMid : C.border}`,
+                  backgroundColor: isActive ? C.accentDim : "transparent",
+                  color: isActive ? C.accentBright : isDone ? C.text : C.textDim,
+                  borderRadius: "999px",
+                  fontSize: "12px",
+                  fontWeight: isActive ? 600 : 500,
+                  cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: "0.45rem",
+                  whiteSpace: "nowrap",
+                  transition: "all 0.15s",
+                  flexShrink: 0,
+                }}
+              >
+                {isDone ? <CheckCircle2 size={13} color={C.success} /> : isActive ? <Circle size={13} fill={C.accent} color={C.accent} /> : <Circle size={13} />}
+                <span className="mono" style={{ fontSize: "10px", opacity: 0.7 }}>{p.num}</span>
+                <span>{p.title}</span>
+                <span className="mono" style={{ fontSize: "10px", opacity: 0.5 }}>{p.time}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      <main style={{ maxWidth: "1320px", margin: "0 auto", padding: "2rem 1.5rem 4rem" }}>
+        <div className="fade-in" key={phase}>
+          {phase === 0 && <PhaseSetup
+            companyName={companyName} setCompanyName={setCompanyName}
+            companyContext={companyContext} setCompanyContext={setCompanyContext}
+            teamName={teamName} setTeamName={setTeamName}
+            onContinue={() => setPhase(1)}
+          />}
+          {phase === 1 && <PhaseDeepScore
+            companyName={companyName}
+            questionScores={questionScores} setQuestionScores={setQuestionScores}
+            typeEvidence={typeEvidence} setTypeEvidence={setTypeEvidence}
+            teamTypeScores={teamTypeScores}
+            teamComplete={teamComplete}
+            onContinue={() => setPhase(2)}
+            onBack={() => setPhase(0)}
+          />}
+          {phase === 2 && <PhaseAI
+            phaseNum="03" phaseTitle="First AI"
+            stepNum={1}
+            companyName={companyName} companyContext={companyContext}
+            aiName={ai1Name} setAiName={setAi1Name}
+            aiRaw={ai1Raw} setAiRaw={setAi1Raw}
+            aiScores={ai1Scores} setAiScores={setAi1Scores}
+            aiComplete={ai1Complete}
+            copied={copied1} setCopied={setCopied1}
+            onContinue={() => setPhase(3)}
+            onBack={() => setPhase(1)}
+            continueLabel="Second AI"
+          />}
+          {phase === 3 && <PhaseAI
+            phaseNum="04" phaseTitle="Second AI"
+            stepNum={2}
+            companyName={companyName} companyContext={companyContext}
+            aiName={ai2Name} setAiName={setAi2Name}
+            aiRaw={ai2Raw} setAiRaw={setAi2Raw}
+            aiScores={ai2Scores} setAiScores={setAi2Scores}
+            aiComplete={ai2Complete}
+            copied={copied2} setCopied={setCopied2}
+            onContinue={() => setPhase(4)}
+            onBack={() => setPhase(2)}
+            continueLabel="Triangulate"
+            otherAiName={ai1Name}
+          />}
+          {phase === 4 && <PhaseTriangulation
+            companyName={companyName}
+            triangulation={triangulation}
+            teamAvg={teamAvg} ai1Avg={ai1Avg} ai2Avg={ai2Avg}
+            ai1Name={ai1Name} ai2Name={ai2Name}
+            typeEvidence={typeEvidence}
+            onContinue={() => setPhase(5)}
+            onBack={() => setPhase(3)}
+          />}
+          {phase === 5 && <PhaseTactics
+            companyName={companyName}
+            teamTypeScores={teamTypeScores}
+            tacticRecs={tacticRecs} setTacticRecs={setTacticRecs}
+            onContinue={() => setPhase(6)}
+            onBack={() => setPhase(4)}
+          />}
+          {phase === 6 && <PhaseTakeaway
+            companyName={companyName} teamName={teamName}
+            teamAvg={teamAvg} ai1Avg={ai1Avg} ai2Avg={ai2Avg}
+            ai1Name={ai1Name} ai2Name={ai2Name}
+            triangulation={triangulation}
+            tacticRecs={tacticRecs}
+            downloadSummary={downloadSummary}
+            onBack={() => setPhase(5)}
+          />}
+        </div>
+      </main>
+
+      {/* Export Modal */}
+      {summaryOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setSummaryOpen(false)}
+          style={{
+            position: "fixed", inset: 0,
+            backgroundColor: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(6px)",
+            zIndex: 1000,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "1.5rem",
+            animation: "fadeIn 0.18s ease-out",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: C.surface,
+              maxWidth: "560px", width: "100%",
+              border: `1px solid ${C.borderHi}`,
+              borderRadius: "16px",
+              padding: "1.75rem",
+              boxShadow: "0 24px 60px rgba(0,0,0,0.5)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem" }}>
+              <div style={{ display: "flex", gap: "0.85rem", alignItems: "flex-start" }}>
+                <div style={{
+                  width: "40px", height: "40px",
+                  background: `linear-gradient(135deg, ${C.accent} 0%, ${C.config} 100%)`,
+                  borderRadius: "10px",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  flexShrink: 0,
+                }}>
+                  <Download size={18} color="white" strokeWidth={2.5} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: "1.15rem", fontWeight: 600, margin: "0 0 0.25rem", color: C.text }}>
+                    Export workshop results
+                  </h3>
+                  <p style={{ fontSize: "0.85rem", color: C.textDim, margin: 0, lineHeight: 1.5 }}>
+                    Save a formatted Word doc, plain text, or copy everything to your clipboard.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSummaryOpen(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", padding: "0.25rem", color: C.textDim, borderRadius: "6px" }}
+                aria-label="Close"
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = C.surface2; e.currentTarget.style.color = C.text; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = C.textDim; }}
+              >
+                <XIcon size={18} />
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginTop: "1.25rem" }}>
+              <ExportRow
+                icon={<FileText size={16} color={C.accentBright} />}
+                title="Microsoft Word"
+                subtitle="Formatted .doc with headings, tables & color-coded categories"
+                onClick={downloadAsWord}
+                primary
+              />
+              <ExportRow
+                icon={<FileText size={16} color={C.textDim} />}
+                title="Plain text"
+                subtitle="Lightweight .txt — works anywhere"
+                onClick={downloadAsText}
+              />
+              <ExportRow
+                icon={summaryCopied ? <Check size={16} color={C.success} /> : <Copy size={16} color={C.textDim} />}
+                title={summaryCopied ? "Copied to clipboard" : "Copy plain text"}
+                subtitle="Paste into Notion, Google Docs, or email"
+                onClick={copyAsText}
+                done={summaryCopied}
+              />
+            </div>
+
+            <p style={{ fontSize: "0.75rem", color: C.textMuted, marginTop: "1.25rem", lineHeight: 1.5 }}>
+              The Word file opens in Word, Google Docs, or Pages. If the download is blocked by your browser sandbox, the Copy option always works.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// PHASE I — SETUP
+// ============================================================
+
+function PhaseSetup({ companyName, setCompanyName, companyContext, setCompanyContext, teamName, setTeamName, onContinue }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: "2.5rem", alignItems: "start" }}>
+      <Card>
+        <PhaseHeader num="01" title="The Company" />
+
+        <p style={{ fontSize: "0.95rem", lineHeight: 1.6, color: C.textDim, margin: "0.5rem 0 1.5rem" }}>
+          Pick a company your team can analyze in 45 minutes. The best choices are companies your team collectively knows — a recent case, a familiar brand, an industry competitor. Avoid the obscure (no shared knowledge) and the over-mythologized (Apple, Tesla — the framework loses its diagnostic power on consensus winners).
+        </p>
+
+        <Field label="Company name" required>
+          <input
+            type="text"
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="Patagonia · Stripe · Helion Energy"
+            className="iw-input"
+            style={{ fontSize: "1.1rem", fontWeight: 500 }}
+            autoFocus
+          />
+        </Field>
+
+        <Field label="Team name" hint="optional">
+          <input
+            type="text"
+            value={teamName}
+            onChange={(e) => setTeamName(e.target.value)}
+            placeholder="Team Alpha"
+            className="iw-input"
+          />
+        </Field>
+
+        <Field label="Context for the AI" hint="recommended">
+          <textarea
+            value={companyContext}
+            onChange={(e) => setCompanyContext(e.target.value)}
+            placeholder="e.g., 'Score their B2B subscription line, not consumer.' or 'Score them as of 2025.'"
+            rows={3}
+            className="iw-input"
+          />
+        </Field>
+
+        <div style={{ marginTop: "1.5rem" }}>
+          <PrimaryButton onClick={onContinue} disabled={!companyName.trim()}>
+            Begin scoring <ChevronRight size={15} />
+          </PrimaryButton>
+        </div>
+      </Card>
+
+      <Card subtle>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.75rem" }}>
+          <Layers size={14} color={C.accentBright} />
+          <span className="label" style={{ color: C.accentBright }}>The Framework</span>
+        </div>
+
+        <p style={{ fontSize: "0.95rem", lineHeight: 1.6, color: C.textDim, margin: 0 }}>
+          The Doblin framework decomposes innovation into <strong style={{ color: C.text }}>ten distinguishable types</strong> across three lenses:
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", margin: "1rem 0 1.25rem" }}>
+          <CategoryChip color={C.config} name="Configuration" desc="how the firm organizes" />
+          <CategoryChip color={C.offering} name="Offering" desc="what it sells" />
+          <CategoryChip color={C.experience} name="Experience" desc="how customers encounter it" />
+        </div>
+
+        <div style={{ padding: "1rem 1.1rem", backgroundColor: C.accentDim, border: `1px solid ${C.accent}40`, borderRadius: "10px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.4rem" }}>
+            <Zap size={13} color={C.accentBright} />
+            <span className="label" style={{ color: C.accentBright }}>Five-Type Threshold</span>
+          </div>
+          <p style={{ fontSize: "0.88rem", lineHeight: 1.55, margin: 0, color: C.text }}>
+            Keeley's research: companies innovating on <strong>5+ types simultaneously</strong> dramatically outperform single-type innovators. The framework's value is showing where a company isn't innovating.
+          </p>
+        </div>
+
+        <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: `1px solid ${C.border}` }}>
+          <div className="label" style={{ marginBottom: "0.6rem" }}>Workshop · 45 min</div>
+          <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.85rem", lineHeight: 1.7, color: C.textDim }}>
+            <li>Score across 43 canonical questions</li>
+            <li>Get assessments from <strong style={{ color: C.text }}>two</strong> AI models</li>
+            <li>Triangulate three perspectives</li>
+            <li>Pick 2–3 tactics from a library of 112</li>
+          </ul>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function CategoryChip({ color, name, desc }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", padding: "0.55rem 0.75rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px" }}>
+      <div style={{ width: "8px", height: "8px", borderRadius: "999px", backgroundColor: color, boxShadow: `0 0 8px ${color}80`, flexShrink: 0 }} />
+      <span style={{ fontSize: "0.9rem", fontWeight: 600, color: C.text }}>{name}</span>
+      <span style={{ fontSize: "0.82rem", color: C.textDim }}>— {desc}</span>
+    </div>
+  );
+}
+
+// ============================================================
+// PHASE II — DEEP SCORING
+// ============================================================
+
+function PhaseDeepScore({ companyName, questionScores, setQuestionScores, typeEvidence, setTypeEvidence, teamTypeScores, teamComplete, onContinue, onBack }) {
+  const completeTypes = TYPES_ORDER.filter(t => teamTypeScores[t].scored === teamTypeScores[t].total).length;
+  const totalAnswered = Object.values(questionScores).filter(v => typeof v === "number").length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "1.25rem", flexWrap: "wrap", gap: "1rem" }}>
+        <PhaseHeader num="02" title="Deep Scoring" subtitle={`Scoring ${companyName} on the 43 canonical Doblin questions`} />
+        <div style={{ display: "flex", gap: "0.75rem" }}>
+          <ProgressPill label="Types" value={completeTypes} total={10} />
+          <ProgressPill label="Questions" value={totalAnswered} total={43} accent />
+        </div>
+      </div>
+
+      <div style={{ padding: "0.85rem 1.1rem", marginBottom: "1.5rem", backgroundColor: C.accentDim, border: `1px solid ${C.accent}30`, borderRadius: "10px", display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
+        <Zap size={16} color={C.accentBright} style={{ flexShrink: 0, marginTop: "2px" }} />
+        <p style={{ margin: 0, fontSize: "0.9rem", lineHeight: 1.55, color: C.text }}>
+          Score each question <span className="mono" style={{ color: C.accentBright }}>0</span> (none) → <span className="mono" style={{ color: C.accentBright }}>3</span> (high). Move quickly — <strong>~25 sec per question</strong>. Type scores normalize to 0–10 as you go. Optional: capture one line of evidence per type.
+        </p>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        {TYPES_ORDER.map((typeName, idx) => (
+          <TypeQuestionCard
+            key={typeName}
+            typeName={typeName}
+            index={idx}
+            questionScores={questionScores}
+            setQuestionScores={setQuestionScores}
+            evidence={typeEvidence[typeName]}
+            setEvidence={(v) => setTypeEvidence(prev => ({ ...prev, [typeName]: v }))}
+            typeScore={teamTypeScores[typeName]}
+          />
+        ))}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2rem" }}>
+        <SecondaryButton onClick={onBack}><ChevronLeft size={15} /> Back</SecondaryButton>
+        <PrimaryButton onClick={onContinue} disabled={!teamComplete}>
+          {teamComplete ? "Continue to first AI" : `Score all 43 (${totalAnswered}/43)`} <ChevronRight size={15} />
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function TypeQuestionCard({ typeName, index, questionScores, setQuestionScores, evidence, setEvidence, typeScore }) {
+  const info = TYPE_INFO[typeName];
+  const catColor = CATEGORY_COLORS[info.category];
+  const questions = QUESTIONS.filter(q => q.type === typeName);
+  const isComplete = typeScore.scored === typeScore.total;
+
+  const setQ = (i, val) => setQuestionScores(prev => ({ ...prev, [`${typeName}:${i}`]: val }));
+
+  return (
+    <article style={{
+      backgroundColor: C.surface,
+      border: `1px solid ${isComplete ? `${catColor}50` : C.border}`,
+      borderRadius: "12px",
+      padding: "1.25rem 1.4rem",
+      position: "relative",
+      overflow: "hidden",
+    }}>
+      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "3px", backgroundColor: catColor, opacity: isComplete ? 1 : 0.5 }} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "1.5rem", alignItems: "flex-start", marginBottom: "1rem" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
+            <span className="mono" style={{ fontSize: "10px", color: C.textMuted }}>{String(index + 1).padStart(2, "0")}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: "0.4rem", padding: "0.15rem 0.55rem", backgroundColor: `${catColor}18`, border: `1px solid ${catColor}40`, borderRadius: "999px" }}>
+              <div style={{ width: "5px", height: "5px", borderRadius: "999px", backgroundColor: catColor }} />
+              <span className="mono" style={{ fontSize: "10px", color: catColor, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>{info.category}</span>
+            </span>
+            <span className="mono" style={{ fontSize: "10px", color: C.textMuted }}>{questions.length} questions</span>
+          </div>
+          <h3 style={{ fontSize: "1.25rem", fontWeight: 600, margin: "0 0 0.3rem", color: C.text, letterSpacing: "-0.01em" }}>
+            {typeName}
+          </h3>
+          <p style={{ fontSize: "0.9rem", lineHeight: 1.5, color: C.textDim, margin: 0 }}>
+            {info.definition}
+          </p>
+        </div>
+
+        <ScoreTile
+          score={isComplete ? typeScore.score : (typeScore.scored > 0 ? typeScore.score : null)}
+          fraction={`${typeScore.scored}/${typeScore.total}`}
+          color={catColor}
+          dim={!isComplete}
+        />
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
+        {questions.map((q, i) => (
+          <QuestionRow
+            key={i}
+            number={i + 1}
+            question={q.text}
+            value={questionScores[`${typeName}:${i}`]}
+            onChange={(v) => setQ(i, v)}
+            color={catColor}
+          />
+        ))}
+      </div>
+
+      <div style={{ marginTop: "1rem" }}>
+        <input
+          type="text"
+          value={evidence}
+          onChange={(e) => setEvidence(e.target.value)}
+          placeholder={`Evidence for ${typeName} — one line, optional`}
+          className="iw-input"
+          style={{ fontSize: "0.85rem", padding: "0.5rem 0.75rem" }}
+        />
+      </div>
+    </article>
+  );
+}
+
+function ScoreTile({ score, fraction, color, dim }) {
+  return (
+    <div style={{
+      backgroundColor: dim ? C.surface2 : `${color}12`,
+      border: `1px solid ${dim ? C.border : `${color}40`}`,
+      borderRadius: "10px",
+      padding: "0.6rem 0.95rem",
+      minWidth: "100px",
+      textAlign: "right",
+    }}>
+      <div className="label" style={{ marginBottom: "0.15rem", textAlign: "right" }}>Score</div>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "flex-end", gap: "0.3rem" }}>
+        <span className="mono" style={{
+          fontSize: "1.7rem", fontWeight: 600,
+          color: score == null ? C.textMuted : color,
+          fontVariantNumeric: "tabular-nums", lineHeight: 1,
+        }}>
+          {score == null ? "—" : score.toFixed(1)}
+        </span>
+        <span className="mono" style={{ fontSize: "11px", color: C.textMuted }}>/10</span>
+      </div>
+      <div className="mono" style={{ fontSize: "10px", color: C.textMuted, marginTop: "0.25rem" }}>{fraction}</div>
+    </div>
+  );
+}
+
+function QuestionRow({ number, question, value, onChange, color }) {
+  const ANCHORS = ["None", "Low", "Med", "High"];
+  const isAnswered = typeof value === "number";
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "auto 1fr auto",
+      alignItems: "center",
+      gap: "0.85rem",
+      padding: "0.5rem 0.7rem",
+      backgroundColor: isAnswered ? C.surface2 : "transparent",
+      border: `1px solid ${isAnswered ? C.border : "transparent"}`,
+      borderRadius: "8px",
+      transition: "all 0.15s",
+    }}>
+      <span className="mono" style={{ fontSize: "10px", color: C.textMuted, fontWeight: 600 }}>Q{number}</span>
+      <p style={{ fontSize: "0.88rem", lineHeight: 1.45, margin: 0, color: C.text }}>{question}</p>
+      <div style={{ display: "flex", gap: "0.2rem" }}>
+        {[0, 1, 2, 3].map(n => {
+          const selected = value === n;
+          return (
+            <button
+              key={n}
+              onClick={() => onChange(n)}
+              className="seg-btn mono"
+              style={{
+                width: "42px", padding: "0.35rem 0",
+                border: `1px solid ${selected ? color : C.border}`,
+                backgroundColor: selected ? `${color}25` : C.surface2,
+                color: selected ? color : C.textDim,
+                borderRadius: "6px",
+                fontSize: "11px", fontWeight: 600,
+                cursor: "pointer",
+                display: "flex", flexDirection: "column", alignItems: "center", gap: "1px",
+                lineHeight: 1.1,
+              }}
+            >
+              <span style={{ fontSize: "13px", fontWeight: 700 }}>{n}</span>
+              <span style={{ fontSize: "8px", letterSpacing: "0.04em", opacity: 0.8, textTransform: "uppercase" }}>{ANCHORS[n]}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PHASE III & IV — AI
+// ============================================================
+
+function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, aiName, setAiName, aiRaw, setAiRaw, aiScores, setAiScores, aiComplete, copied, setCopied, onContinue, onBack, continueLabel, otherAiName }) {
+  const prompt = useMemo(() => buildAIPrompt(companyName, companyContext), [companyName, companyContext]);
+
+  const handleManualScore = (typeName, val) => {
+    const num = val === "" ? null : parseFloat(val);
+    if (num !== null && (isNaN(num) || num < 0 || num > 10)) return;
+    setAiScores(prev => ({ ...prev, [typeName]: num }));
+  };
+
+  const enteredCount = TYPES_ORDER.filter(t => typeof aiScores[t] === "number").length;
+
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (e) {}
+  };
+
+  const aiURL = aiName === "Claude" ? "claude.ai" : aiName === "ChatGPT" ? "chatgpt.com" : aiName === "Gemini" ? "gemini.google.com" : aiName === "Perplexity" ? "perplexity.ai" : "the model's interface";
+
+  return (
+    <div>
+      <PhaseHeader
+        num={phaseNum}
+        title={phaseTitle}
+        subtitle={otherAiName
+          ? `For triangulation, get a different AI's perspective. Try something other than ${otherAiName}.`
+          : "An independent assessment from an AI analyst."}
+      />
+
+      <div style={{ display: "flex", alignItems: "center", gap: "0.85rem", margin: "1.25rem 0 1.5rem" }}>
+        <span className="label">AI Model</span>
+        <select value={aiName} onChange={(e) => setAiName(e.target.value)} className="iw-select">
+          {AI_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
+        <Card>
+          <StepLabel num={`${stepNum}A`} title={`Send this prompt to ${aiName}`} />
+          <p style={{ fontSize: "0.9rem", lineHeight: 1.55, color: C.textDim, margin: "0 0 1rem" }}>
+            Open <span className="mono" style={{ color: C.accentBright }}>{aiURL}</span> in a new tab and paste the prompt below.
+          </p>
+
+          <div style={{ position: "relative" }}>
+            <pre className="mono" style={{
+              backgroundColor: C.bg,
+              color: C.text,
+              padding: "1rem 1.1rem",
+              fontSize: "0.78rem",
+              lineHeight: 1.6,
+              overflow: "auto",
+              maxHeight: "320px",
+              whiteSpace: "pre-wrap",
+              margin: 0,
+              border: `1px solid ${C.border}`,
+              borderRadius: "10px",
+            }}>
+              {prompt}
+            </pre>
+            <button
+              onClick={copyPrompt}
+              className="mono"
+              style={{
+                position: "absolute", top: "0.6rem", right: "0.6rem",
+                padding: "0.4rem 0.7rem",
+                backgroundColor: copied ? C.success : C.accent,
+                color: "white", border: "none", borderRadius: "6px",
+                fontSize: "10px", fontWeight: 600, letterSpacing: "0.06em",
+                textTransform: "uppercase", cursor: "pointer",
+                display: "flex", alignItems: "center", gap: "0.35rem",
+                transition: "all 0.15s",
+              }}
+            >
+              {copied ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
+            </button>
+          </div>
+
+          <div style={{ marginTop: "0.85rem", padding: "0.7rem 0.85rem", backgroundColor: `${C.success}10`, border: `1px solid ${C.success}30`, borderRadius: "8px", fontSize: "0.8rem", color: C.text, display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+            <Zap size={13} color={C.success} style={{ flexShrink: 0, marginTop: "2px" }} />
+            <span><strong style={{ color: C.success }}>Tip:</strong> Enable web search if your model supports it — without current data, the AI may score using year-old training data.</span>
+          </div>
+        </Card>
+
+        <Card>
+          <StepLabel num={`${stepNum}B`} title={`Paste ${aiName}'s response`} />
+          <p style={{ fontSize: "0.9rem", lineHeight: 1.55, color: C.textDim, margin: "0 0 1rem" }}>
+            Paste the full reply. Scores are auto-extracted; verify or fix any that didn't parse.
+          </p>
+
+          <textarea
+            value={aiRaw}
+            onChange={(e) => setAiRaw(e.target.value)}
+            placeholder={`Paste ${aiName}'s full response here...`}
+            rows={10}
+            className="iw-input"
+            style={{ fontSize: "0.88rem", minHeight: "200px", fontFamily: 'inherit' }}
+          />
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem", marginBottom: "0.5rem" }}>
+            <span className="label">Extracted Scores</span>
+            <span className="mono" style={{ fontSize: "11px", color: enteredCount === 10 ? C.success : C.textDim }}>{enteredCount}/10</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem 0.85rem", padding: "0.85rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px" }}>
+            {TYPES_ORDER.map(t => (
+              <div key={t} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.82rem" }}>
+                <span style={{ color: C.text }}>{t}</span>
+                <input
+                  type="number" min={0} max={10} step={0.1}
+                  value={aiScores[t] ?? ""}
+                  onChange={(e) => handleManualScore(t, e.target.value)}
+                  className="mono"
+                  style={{
+                    width: "55px", padding: "0.2rem 0.45rem",
+                    fontSize: "0.82rem", textAlign: "right",
+                    border: `1px solid ${C.borderMid}`, borderRadius: "5px",
+                    backgroundColor: C.bg, color: C.text,
+                    outline: "none", fontVariantNumeric: "tabular-nums",
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2rem" }}>
+        <SecondaryButton onClick={onBack}><ChevronLeft size={15} /> Back</SecondaryButton>
+        <PrimaryButton onClick={onContinue} disabled={!aiComplete}>
+          {aiComplete ? continueLabel : `Enter all 10 (${enteredCount}/10)`} <ChevronRight size={15} />
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PHASE V — TRIANGULATION
+// ============================================================
+
+function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Avg, ai1Name, ai2Name, typeEvidence, onContinue, onBack }) {
+  const chartData = triangulation.map(item => ({
+    name: item.type,
+    shortName: item.type.replace("Customer Engagement", "Cust. Eng.").replace("Product Performance", "Prod. Perf.").replace("Product System", "Prod. Sys."),
+    Team: item.team,
+    [ai1Name]: item.ai1,
+    [ai2Name]: item.ai2,
+  }));
+
+  const consensus = triangulation.filter(i => i.spread <= 1.5).sort((a, b) => b.team - a.team);
+  const teamVsAIs = [...triangulation].sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI)).slice(0, 3);
+  const aisDisagree = [...triangulation].sort((a, b) => b.aiSpread - a.aiSpread).slice(0, 3);
+
+  return (
+    <div>
+      <PhaseHeader num="05" title="Triangulation" subtitle={`Where do you, ${ai1Name}, and ${ai2Name} agree about ${companyName}? Where does each see something the others miss?`} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.85rem", margin: "1.5rem 0" }}>
+        <AvgTile label="Team avg" value={teamAvg} color={C.experience} />
+        <AvgTile label={`${ai1Name} avg`} value={ai1Avg} color={C.offering} />
+        <AvgTile label={`${ai2Name} avg`} value={ai2Avg} color={C.config} />
+      </div>
+
+      <Card style={{ marginBottom: "1.5rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.85rem" }}>
+          <span className="label">Three-way comparison · Score by type</span>
+        </div>
+        <div style={{ height: "400px" }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData} margin={{ top: 5, right: 12, bottom: 60, left: 0 }}>
+              <CartesianGrid strokeDasharray="2 4" stroke={C.borderMid} vertical={false} />
+              <XAxis dataKey="shortName" tick={{ fontSize: 10, fill: C.textDim }} angle={-30} textAnchor="end" interval={0} stroke={C.borderHi} />
+              <YAxis domain={[0, 10]} tick={{ fontSize: 11, fill: C.textDim }} stroke={C.borderHi} />
+              <Tooltip
+                contentStyle={{ backgroundColor: C.surface2, border: `1px solid ${C.borderHi}`, borderRadius: 8, color: C.text }}
+                cursor={{ fill: "rgba(255,255,255,0.04)" }}
+                labelFormatter={(label) => {
+                  const item = chartData.find(d => d.shortName === label);
+                  return item ? item.name : label;
+                }}
+              />
+              <Legend wrapperStyle={{ paddingTop: "0.85rem" }} />
+              <Bar dataKey="Team" fill={C.experience} radius={[3, 3, 0, 0]} />
+              <Bar dataKey={ai1Name} fill={C.offering} radius={[3, 3, 0, 0]} />
+              <Bar dataKey={ai2Name} fill={C.config} radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem" }}>
+        <PatternBox title="Consensus" subtitle="All three within 1.5 points" color={C.success} icon={<CheckCircle2 size={14} />}>
+          {consensus.length === 0 && <EmptyHint text="No three-way consensus yet." />}
+          {consensus.slice(0, 4).map(c => (
+            <PatternRow key={c.type} type={c.type} v1={c.team} v2={c.ai1} v3={c.ai2} ev={typeEvidence[c.type]} />
+          ))}
+        </PatternBox>
+
+        <PatternBox title="Team vs. AIs" subtitle="Team disagrees with AI consensus" color={C.experience} icon={<Target size={14} />}>
+          {teamVsAIs.map(c => (
+            <PatternRow
+              key={c.type} type={c.type}
+              v1={c.team} v2={c.ai1} v3={c.ai2}
+              note={`Team ${c.teamVsAI > 0 ? "higher" : "lower"} by ${Math.abs(c.teamVsAI).toFixed(1)}`}
+              ev={typeEvidence[c.type]}
+            />
+          ))}
+        </PatternBox>
+
+        <PatternBox title="AIs disagree" subtitle={`${ai1Name} vs ${ai2Name}`} color={C.config} icon={<Zap size={14} />}>
+          {aisDisagree.map(c => (
+            <PatternRow
+              key={c.type} type={c.type}
+              v1={c.team} v2={c.ai1} v3={c.ai2}
+              note={`AI spread: ${c.aiSpread.toFixed(1)}`}
+              ev={typeEvidence[c.type]}
+            />
+          ))}
+        </PatternBox>
+      </div>
+
+      <Card style={{ marginTop: "1.5rem", borderColor: `${C.config}40`, backgroundColor: `${C.config}08` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
+          <Sparkles size={14} color={C.config} />
+          <span className="label" style={{ color: C.config }}>Discussion · 3 minutes</span>
+        </div>
+        <ol style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.92rem", lineHeight: 1.65, color: C.text }}>
+          <li><strong>Where AIs agree but disagree with you:</strong> Two independent models pattern-matching on similar evidence. What might they be picking up that the team missed?</li>
+          <li><strong>Where AIs disagree with each other:</strong> The framework is genuinely ambiguous on this type for this company — or the models drew on different recent information. Which is it?</li>
+          <li><strong>Where all three converge:</strong> Real signal, or just the conventional wisdom about this company that everyone has internalized?</li>
+        </ol>
+      </Card>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2rem" }}>
+        <SecondaryButton onClick={onBack}><ChevronLeft size={15} /> Back</SecondaryButton>
+        <PrimaryButton onClick={onContinue}>Tactic recommendations <ChevronRight size={15} /></PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function AvgTile({ label, value, color }) {
+  return (
+    <div style={{
+      backgroundColor: C.surface,
+      border: `1px solid ${C.border}`,
+      borderTop: `2px solid ${color}`,
+      borderRadius: "10px",
+      padding: "0.85rem 1.1rem",
+    }}>
+      <div className="label" style={{ marginBottom: "0.3rem" }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: "0.35rem" }}>
+        <span className="mono" style={{ fontSize: "1.85rem", fontWeight: 600, color, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>
+          {value !== null ? value.toFixed(2) : "—"}
+        </span>
+        <span className="mono" style={{ fontSize: "11px", color: C.textMuted }}>/10</span>
+      </div>
+    </div>
+  );
+}
+
+function PatternBox({ title, subtitle, color, icon, children }) {
+  return (
+    <div style={{
+      backgroundColor: C.surface,
+      border: `1px solid ${color}30`,
+      borderTop: `2px solid ${color}`,
+      borderRadius: "10px",
+      padding: "0.95rem 1.1rem",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.2rem", color }}>
+        {icon}
+        <span className="label" style={{ color, fontWeight: 600 }}>{title}</span>
+      </div>
+      <div style={{ fontSize: "0.78rem", color: C.textDim, marginBottom: "0.85rem" }}>
+        {subtitle}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function PatternRow({ type, v1, v2, v3, note, ev }) {
+  return (
+    <div style={{ paddingBottom: "0.5rem", borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: "0.92rem", fontWeight: 600, marginBottom: "0.2rem", color: C.text }}>
+        {type}
+      </div>
+      <div className="mono" style={{ fontSize: "10px", color: C.textDim, display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+        <span>T:<strong style={{ color: C.experience, marginLeft: "2px" }}>{v1.toFixed(1)}</strong></span>
+        <span>A1:<strong style={{ color: C.offering, marginLeft: "2px" }}>{v2.toFixed(1)}</strong></span>
+        <span>A2:<strong style={{ color: C.config, marginLeft: "2px" }}>{v3.toFixed(1)}</strong></span>
+        {note && <span style={{ color: C.experience }}>· {note}</span>}
+      </div>
+      {ev && (
+        <div style={{ fontSize: "0.82rem", fontStyle: "italic", color: C.textDim, marginTop: "0.3rem", lineHeight: 1.4 }}>
+          "{ev}"
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmptyHint({ text }) {
+  return (
+    <div style={{ fontSize: "0.85rem", fontStyle: "italic", color: C.textMuted, padding: "0.4rem 0" }}>
+      {text}
+    </div>
+  );
+}
+
+// ============================================================
+// PHASE VI — TACTICS
+// ============================================================
+
+const MAX_TACTICS = 3;
+
+function PhaseTactics({ companyName, teamTypeScores, tacticRecs, setTacticRecs, onContinue, onBack }) {
+  const initialOpen = useMemo(() => {
+    const sorted = [...TYPES_ORDER].sort((a, b) => teamTypeScores[a].score - teamTypeScores[b].score);
+    return sorted.length ? sorted[0] : null;
+  }, [teamTypeScores]);
+
+  const [openType, setOpenType] = useState(initialOpen);
+  const justificationRefs = useRef({});
+
+  const handleContinue = () => {
+    if (canContinue) {
+      onContinue();
+      return;
+    }
+    // Justifications missing — scroll to first empty one and focus it
+    const firstEmpty = tacticRecs.find(r => !r.justification.trim());
+    if (firstEmpty) {
+      const key = `${firstEmpty.type}:${firstEmpty.name}`;
+      const el = justificationRefs.current[key];
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTimeout(() => el.focus(), 250);
+      }
+    }
+  };
+
+  const isSelected = (type, name) => tacticRecs.some(r => r.type === type && r.name === name);
+
+  const addTactic = (type, name) => {
+    if (tacticRecs.length >= MAX_TACTICS) return;
+    if (isSelected(type, name)) return;
+    setTacticRecs(prev => [...prev, { type, name, justification: "" }]);
+  };
+
+  const removeTactic = (type, name) => {
+    setTacticRecs(prev => prev.filter(r => !(r.type === type && r.name === name)));
+  };
+
+  const updateJustification = (type, name, val) => {
+    setTacticRecs(prev => prev.map(r =>
+      (r.type === type && r.name === name) ? { ...r, justification: val } : r
+    ));
+  };
+
+  const canContinue = tacticRecs.length >= 2 && tacticRecs.every(r => r.justification.trim().length > 0);
+
+  return (
+    <div>
+      <PhaseHeader num="06" title="Tactic Recommendations" subtitle={`Doblin's library of 112 tactics — pick 2-3 ${companyName} should adopt next, and justify why.`} />
+
+      <div style={{ marginTop: "1.25rem", marginBottom: "1.5rem", padding: "0.85rem 1.1rem", backgroundColor: C.accentDim, border: `1px solid ${C.accent}30`, borderRadius: "10px", display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
+        <Layers size={16} color={C.accentBright} style={{ flexShrink: 0, marginTop: "2px" }} />
+        <p style={{ margin: 0, fontSize: "0.9rem", lineHeight: 1.55, color: C.text }}>
+          Tactics are concrete moves to innovate on a given type. Types are sorted with your team's <strong style={{ color: C.accentBright }}>lowest scores first</strong> — these are your opportunities. Click <span className="mono" style={{ color: C.accentBright }}>+</span> to recommend, then justify each pick on the right.
+        </p>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "1.5rem", alignItems: "start" }}>
+        {/* LEFT: tactic browser */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+          {[...TYPES_ORDER]
+            .sort((a, b) => teamTypeScores[a].score - teamTypeScores[b].score)
+            .map(typeName => {
+              const info = TYPE_INFO[typeName];
+              const catColor = CATEGORY_COLORS[info.category];
+              const tactics = TACTICS.filter(t => t.type === typeName);
+              const score = teamTypeScores[typeName];
+              const isOpen = openType === typeName;
+              const opportunity = score.score < 5;
+              return (
+                <div key={typeName} style={{
+                  backgroundColor: C.surface,
+                  border: `1px solid ${isOpen ? `${catColor}50` : C.border}`,
+                  borderRadius: "10px",
+                  overflow: "hidden",
+                  transition: "all 0.15s",
+                }}>
+                  <button
+                    onClick={() => setOpenType(isOpen ? null : typeName)}
+                    style={{
+                      width: "100%", display: "grid",
+                      gridTemplateColumns: "auto 1fr auto auto",
+                      alignItems: "center", gap: "0.85rem",
+                      padding: "0.75rem 1rem",
+                      backgroundColor: "transparent", border: "none",
+                      cursor: "pointer", textAlign: "left",
+                      color: C.text,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <div style={{ width: "8px", height: "8px", borderRadius: "999px", backgroundColor: catColor, boxShadow: `0 0 6px ${catColor}80` }} />
+                      <span className="mono" style={{ fontSize: "9px", color: catColor, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{info.category}</span>
+                    </div>
+                    <h4 style={{ fontSize: "1rem", fontWeight: 600, margin: 0, color: C.text, display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                      {typeName}
+                      {opportunity && (
+                        <span style={{ padding: "0.1rem 0.4rem", backgroundColor: `${C.warning}20`, color: C.warning, borderRadius: "4px", fontSize: "9px", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                          opportunity
+                        </span>
+                      )}
+                    </h4>
+                    <span className="mono" style={{ fontSize: "11px", color: C.textDim }}>
+                      <strong style={{ color: catColor, fontSize: "13px" }}>{score.score.toFixed(1)}</strong>/10
+                      <span style={{ marginLeft: "0.5rem", opacity: 0.7 }}>· {tactics.length}</span>
+                    </span>
+                    {isOpen ? <ChevronUp size={16} color={C.textDim} /> : <ChevronDown size={16} color={C.textDim} />}
+                  </button>
+
+                  {isOpen && (
+                    <div style={{ padding: "0 1rem 0.85rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                      {tactics.map(t => {
+                        const selected = isSelected(typeName, t.name);
+                        const disabled = !selected && tacticRecs.length >= MAX_TACTICS;
+                        return (
+                          <div key={t.name} style={{
+                            display: "grid",
+                            gridTemplateColumns: "auto 1fr auto",
+                            gap: "0.7rem",
+                            alignItems: "center",
+                            padding: "0.5rem 0.7rem",
+                            backgroundColor: selected ? `${catColor}15` : C.surface2,
+                            border: `1px solid ${selected ? `${catColor}40` : C.border}`,
+                            borderRadius: "8px",
+                          }}>
+                            <span className="mono" style={{ fontSize: "10px", color: catColor, fontWeight: 700, minWidth: "110px" }}>
+                              {t.name}
+                            </span>
+                            <p style={{ fontSize: "0.83rem", margin: 0, lineHeight: 1.4, color: C.textDim }}>
+                              {t.desc}
+                            </p>
+                            <button
+                              onClick={() => selected ? removeTactic(typeName, t.name) : addTactic(typeName, t.name)}
+                              disabled={disabled}
+                              className="mono"
+                              style={{
+                                padding: "0.3rem 0.55rem",
+                                border: "none",
+                                backgroundColor: selected ? C.danger : disabled ? C.surface3 : C.accent,
+                                color: disabled ? C.textMuted : "white",
+                                borderRadius: "5px",
+                                fontSize: "10px", fontWeight: 600,
+                                letterSpacing: "0.04em", textTransform: "uppercase",
+                                cursor: disabled ? "not-allowed" : "pointer",
+                                display: "flex", alignItems: "center", gap: "0.25rem",
+                                transition: "all 0.15s",
+                              }}
+                            >
+                              {selected ? <><XIcon size={11} /> Remove</> : <><Plus size={11} /> Add</>}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+
+        {/* RIGHT: selected tactics + justifications */}
+        <aside style={{ position: "sticky", top: "5rem", alignSelf: "start" }}>
+          <Card style={{ borderColor: tacticRecs.length > 0 ? `${C.accent}40` : C.border }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.4rem" }}>
+              <Target size={14} color={C.accentBright} />
+              <span className="label" style={{ color: C.accentBright }}>Recommendations · Justify Each</span>
+            </div>
+            <h3 style={{ fontSize: "1.15rem", fontWeight: 600, margin: "0 0 1rem", color: C.text }}>
+              {tacticRecs.length} of {MAX_TACTICS} selected
+            </h3>
+
+            {tacticRecs.length === 0 && (
+              <div style={{ fontSize: "0.88rem", lineHeight: 1.5, color: C.textDim, padding: "1rem 0", fontStyle: "italic" }}>
+                Browse types on the left and click <span className="mono" style={{ fontStyle: "normal", color: C.accentBright }}>+ Add</span> to select tactics. Pick 2–3 total.
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+              {tacticRecs.map((r, idx) => {
+                const info = TYPE_INFO[r.type];
+                const catColor = CATEGORY_COLORS[info.category];
+                return (
+                  <div key={`${r.type}:${r.name}`} style={{
+                    backgroundColor: C.surface2,
+                    border: `1px solid ${catColor}30`,
+                    borderLeft: `3px solid ${catColor}`,
+                    borderRadius: "8px",
+                    padding: "0.75rem 0.9rem",
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.4rem" }}>
+                      <div>
+                        <div className="mono" style={{ fontSize: "9px", color: catColor, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, marginBottom: "0.15rem" }}>
+                          {String(idx + 1).padStart(2, "0")} · {r.type}
+                        </div>
+                        <div style={{ fontSize: "0.98rem", fontWeight: 600, color: C.text }}>
+                          {r.name}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => removeTactic(r.type, r.name)}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: C.textDim, padding: "0.2rem", borderRadius: "5px" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = C.danger; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = C.textDim; }}
+                      >
+                        <XIcon size={13} />
+                      </button>
+                    </div>
+                    <textarea
+                      ref={(el) => { justificationRefs.current[`${r.type}:${r.name}`] = el; }}
+                      value={r.justification}
+                      onChange={(e) => updateJustification(r.type, r.name, e.target.value)}
+                      placeholder={`Why this tactic for ${companyName}? What's the evidence? What would adoption require?`}
+                      rows={3}
+                      className="iw-input"
+                      style={{ fontSize: "0.83rem", padding: "0.5rem 0.6rem" }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </aside>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2rem" }}>
+        <SecondaryButton onClick={onBack}><ChevronLeft size={15} /> Back</SecondaryButton>
+        <PrimaryButton onClick={handleContinue} disabled={tacticRecs.length < 2}>
+          {canContinue
+            ? "Take-away"
+            : tacticRecs.length < 2
+              ? `Pick at least 2 tactics (${tacticRecs.length}/2)`
+              : "Justify each tactic →"}
+          <ChevronRight size={15} />
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PHASE VII — TAKEAWAY
+// ============================================================
+
+function PhaseTakeaway({ companyName, teamName, teamAvg, ai1Avg, ai2Avg, ai1Name, ai2Name, triangulation, tacticRecs, downloadSummary, onBack }) {
+  const fiveTypeRule = useMemo(() => {
+    const teamHighs = triangulation.filter(g => g.team >= 7).length;
+    const ai1Highs = triangulation.filter(g => g.ai1 >= 7).length;
+    const ai2Highs = triangulation.filter(g => g.ai2 >= 7).length;
+    return { teamHighs, ai1Highs, ai2Highs };
+  }, [triangulation]);
+
+  const maxHighs = Math.max(fiveTypeRule.teamHighs, fiveTypeRule.ai1Highs, fiveTypeRule.ai2Highs);
+
+  return (
+    <div style={{ maxWidth: "920px", margin: "0 auto" }}>
+      <PhaseHeader num="07" title="The Take-Away" />
+
+      <p style={{ fontSize: "1.1rem", lineHeight: 1.6, marginTop: "1.25rem", color: C.text }}>
+        Your team's analysis of <strong style={{ color: C.accentBright }}>{companyName || "the company"}</strong>{teamName && <> from <strong style={{ color: C.accentBright }}>{teamName}</strong></>} is complete.
+      </p>
+
+      <Card style={{ marginTop: "1.5rem", borderColor: `${C.experience}40`, backgroundColor: `${C.experience}08` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
+          <Zap size={14} color={C.experience} />
+          <span className="label" style={{ color: C.experience }}>Reflection · Five-Type Threshold</span>
+        </div>
+        <p style={{ fontSize: "0.98rem", lineHeight: 1.65, margin: 0, color: C.text }}>
+          Keeley's research found companies innovating on <strong>five or more types simultaneously</strong> dramatically outperform single-type innovators. By the team's scoring, <strong>{companyName}</strong> innovates strongly (≥ 7) on <strong style={{ color: C.experience }}>{fiveTypeRule.teamHighs}</strong> {fiveTypeRule.teamHighs === 1 ? "type" : "types"}; by {ai1Name}, on <strong style={{ color: C.offering }}>{fiveTypeRule.ai1Highs}</strong>; by {ai2Name}, on <strong style={{ color: C.config }}>{fiveTypeRule.ai2Highs}</strong>.{" "}
+          {maxHighs >= 5
+            ? "By at least one measure, this company clears the threshold — the framework predicts durable advantage."
+            : "None of the three observers see five-or-more strong types. The company has clear room to broaden its innovation portfolio."}
+        </p>
+      </Card>
+
+      <Card style={{ marginTop: "1rem", borderColor: `${C.offering}40`, backgroundColor: `${C.offering}08` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
+          <Layers size={14} color={C.offering} />
+          <span className="label" style={{ color: C.offering }}>Reflection · Triangulation, not Oracle</span>
+        </div>
+        <p style={{ fontSize: "0.98rem", lineHeight: 1.65, margin: 0, color: C.text }}>
+          You consulted two different AI models, and they did not give identical scores. That spread is itself information: the framework has genuine ambiguity, the models have different training and access, and the team brings local context neither can match. The right way to use AI as an analytical assistant is the way you used it — as one voice among several, valued precisely because it disagrees.
+        </p>
+      </Card>
+
+      <Card style={{ marginTop: "1rem", borderColor: `${C.config}40`, backgroundColor: `${C.config}08` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
+          <Target size={14} color={C.config} />
+          <span className="label" style={{ color: C.config }}>Reflection · From Diagnosis to Recommendation</span>
+        </div>
+        <p style={{ fontSize: "0.98rem", lineHeight: 1.65, margin: 0, color: C.text }}>
+          Diagnosis is the easy half. Recommendation requires you to commit. Your team selected <strong>{tacticRecs.length} {tacticRecs.length === 1 ? "tactic" : "tactics"}</strong>{tacticRecs.length > 0 && <>: {tacticRecs.map((r, i) => (
+            <React.Fragment key={`${r.type}:${r.name}`}>
+              {i > 0 && ", "}
+              <strong style={{ color: CATEGORY_COLORS[TYPE_INFO[r.type].category] }}>{r.name}</strong>
+            </React.Fragment>
+          ))}</>}. Each carries an opportunity cost — what would adoption require this company to <em>stop</em> doing?
+        </p>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginTop: "2rem" }}>
+        <PrimaryButton onClick={downloadSummary} style={{ padding: "1rem 1.25rem", justifyContent: "center" }}>
+          <Download size={15} /> Export workshop results
+        </PrimaryButton>
+        <SecondaryButton onClick={onBack} style={{ padding: "1rem 1.25rem", justifyContent: "center" }}>
+          <ChevronLeft size={15} /> Revisit tactics
+        </SecondaryButton>
+      </div>
+
+      <div style={{ marginTop: "3rem", textAlign: "center", padding: "1.5rem 0", borderTop: `1px solid ${C.border}` }}>
+        <p style={{ fontSize: "1.05rem", fontStyle: "italic", color: C.textDim, margin: 0, lineHeight: 1.5 }}>
+          "Innovation is the elaboration of new combinations of existing knowledge."
+        </p>
+        <p className="mono" style={{ fontSize: "10px", color: C.textMuted, marginTop: "0.4rem", letterSpacing: "0.1em" }}>
+          — JOSEPH SCHUMPETER, 1942
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SHARED UI
+// ============================================================
+
+function PhaseHeader({ num, title, subtitle }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.4rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", padding: "0.25rem 0.65rem", backgroundColor: C.accentDim, border: `1px solid ${C.accent}40`, borderRadius: "999px" }}>
+          <span className="mono" style={{ fontSize: "10px", color: C.accentBright, fontWeight: 600, letterSpacing: "0.08em" }}>PHASE {num}</span>
+        </div>
+      </div>
+      <h2 style={{ fontSize: "1.85rem", fontWeight: 600, margin: 0, color: C.text, letterSpacing: "-0.02em", lineHeight: 1.15 }}>
+        {title}
+      </h2>
+      {subtitle && (
+        <p style={{ margin: "0.4rem 0 0", fontSize: "0.95rem", color: C.textDim, lineHeight: 1.55 }}>
+          {subtitle}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function StepLabel({ num, title }) {
+  return (
+    <div style={{ marginBottom: "0.65rem" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem" }}>
+        <span style={{ padding: "0.2rem 0.5rem", backgroundColor: C.accent, color: "white", borderRadius: "5px", fontSize: "10px", fontWeight: 700, letterSpacing: "0.08em" }} className="mono">
+          STEP {num}
+        </span>
+      </div>
+      <h3 style={{ fontSize: "1.1rem", fontWeight: 600, margin: 0, color: C.text }}>
+        {title}
+      </h3>
+    </div>
+  );
+}
+
+function PrimaryButton({ children, onClick, disabled, style = {} }) {
+  return (
+    <button
+      onClick={onClick} disabled={disabled} className="mono"
+      style={{
+        padding: "0.7rem 1.2rem",
+        backgroundColor: disabled ? "rgba(59,130,246,0.25)" : C.accent,
+        color: "white",
+        border: "none",
+        borderRadius: "8px",
+        fontSize: "12px",
+        fontWeight: 600,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        cursor: disabled ? "not-allowed" : "pointer",
+        display: "inline-flex", alignItems: "center", gap: "0.5rem",
+        transition: "all 0.15s",
+        boxShadow: disabled ? "none" : `0 1px 2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05) inset`,
+        ...style,
+      }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.backgroundColor = C.accentBright; }}
+      onMouseLeave={(e) => { if (!disabled) e.currentTarget.style.backgroundColor = C.accent; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SecondaryButton({ children, onClick, style = {} }) {
+  return (
+    <button
+      onClick={onClick} className="mono"
+      style={{
+        padding: "0.7rem 1.2rem",
+        backgroundColor: C.surface2,
+        color: C.text,
+        border: `1px solid ${C.borderHi}`,
+        borderRadius: "8px",
+        fontSize: "12px",
+        fontWeight: 500,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+        display: "inline-flex", alignItems: "center", gap: "0.5rem",
+        transition: "all 0.15s",
+        ...style,
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = C.surface3; }}
+      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = C.surface2; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Card({ children, subtle, style = {} }) {
+  return (
+    <div style={{
+      backgroundColor: subtle ? "transparent" : C.surface,
+      border: `1px solid ${C.border}`,
+      borderRadius: "12px",
+      padding: "1.5rem",
+      ...style,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, hint, required, children }) {
+  return (
+    <div style={{ marginBottom: "1.1rem" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: "0.5rem", marginBottom: "0.4rem" }}>
+        <span className="label">{label}</span>
+        {required && <span style={{ fontSize: "10px", color: C.danger }}>required</span>}
+        {hint && <span className="mono" style={{ fontSize: "10px", color: C.textMuted }}>{hint}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ProgressPill({ label, value, total, accent }) {
+  const pct = (value / total) * 100;
+  const color = accent ? C.accent : C.success;
+  return (
+    <div style={{ padding: "0.45rem 0.85rem", backgroundColor: C.surface, border: `1px solid ${C.border}`, borderRadius: "999px", display: "flex", alignItems: "center", gap: "0.55rem" }}>
+      <div style={{ width: "26px", height: "4px", backgroundColor: C.surface3, borderRadius: "999px", overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", backgroundColor: color, borderRadius: "999px", transition: "width 0.3s" }} />
+      </div>
+      <span className="mono" style={{ fontSize: "11px", color: C.text, fontWeight: 600 }}>
+        {value}<span style={{ color: C.textDim, fontWeight: 400 }}>/{total}</span>
+      </span>
+      <span className="mono" style={{ fontSize: "9px", color: C.textDim, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
+    </div>
+  );
+}
+
+function ExportRow({ icon, title, subtitle, onClick, primary, done }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "0.85rem",
+        padding: "0.85rem 1rem",
+        backgroundColor: hover ? C.surface2 : C.surface,
+        border: `1px solid ${primary ? `${C.accent}40` : done ? `${C.success}40` : C.border}`,
+        borderRadius: "10px",
+        cursor: "pointer",
+        textAlign: "left",
+        transition: "all 0.15s",
+        width: "100%",
+        color: C.text,
+      }}
+    >
+      <div style={{
+        width: "36px", height: "36px",
+        backgroundColor: primary ? C.accentDim : done ? `${C.success}15` : C.surface3,
+        borderRadius: "8px",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        flexShrink: 0,
+      }}>
+        {icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: "0.92rem", fontWeight: 600, color: C.text, marginBottom: "0.1rem" }}>{title}</div>
+        <div style={{ fontSize: "0.78rem", color: C.textDim, lineHeight: 1.3 }}>{subtitle}</div>
+      </div>
+      <ChevronRight size={16} color={C.textDim} style={{ flexShrink: 0 }} />
+    </button>
+  );
+}
+
+    // ============================================================
+    // Boot
+    // ============================================================
+    const rootEl = document.getElementById("root");
+    rootEl.setAttribute("data-iw-mounted", "true");
+    createRoot(rootEl).render(<InnovationWorkshop />);
+  </script>
+</body>
+</html>
