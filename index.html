@@ -59,7 +59,6 @@
     </div>
   </div>
 
-  <!-- Map bare-module imports to esm.sh CDN -->
   <script type="importmap">
   {
     "imports": {
@@ -73,10 +72,8 @@
   }
   </script>
 
-  <!-- Babel standalone transforms JSX to JS in the browser -->
   <script src="https://unpkg.com/@babel/standalone@7.24.4/babel.min.js"></script>
 
-  <!-- Render error if the script crashes -->
   <script>
     window.addEventListener("error", (e) => {
       const root = document.getElementById("root");
@@ -99,11 +96,6 @@
       CheckCircle2, Circle, Target, Layers, Zap
     } from "lucide-react";
 
-    // ============================================================
-    // localStorage shim for window.storage (used by the workshop
-    // for cross-session persistence). The artifact runtime provides
-    // window.storage; in a browser we polyfill it with localStorage.
-    // ============================================================
     if (!window.storage) {
       window.storage = {
         async get(key) {
@@ -120,11 +112,6 @@
         }
       };
     }
-
-    // ============================================================
-    // COMPONENT CODE — copied verbatim from innovation_workshop_45min.jsx
-    // (imports stripped, `export default` removed; rendered at bottom)
-    // ============================================================
 
 
 // ============================================================
@@ -366,8 +353,6 @@ const PHASES = [
 
 const STORAGE_KEY = "innovation_workshop_v3";
 
-const AI_OPTIONS = ["Claude", "ChatGPT", "Gemini", "Perplexity", "Other"];
-
 // ============================================================
 // HELPERS
 // ============================================================
@@ -474,11 +459,11 @@ function InnovationWorkshop() {
   const [questionScores, setQuestionScores] = useState(initialQuestionScores());
   const [typeEvidence, setTypeEvidence] = useState(initialTypeEvidence());
 
-  const [ai1Name, setAi1Name] = useState("Claude");
+  const [ai1Name, setAi1Name] = useState("");
   const [ai1Raw, setAi1Raw] = useState("");
   const [ai1Scores, setAi1Scores] = useState(initialAIScores());
 
-  const [ai2Name, setAi2Name] = useState("ChatGPT");
+  const [ai2Name, setAi2Name] = useState("");
   const [ai2Raw, setAi2Raw] = useState("");
   const [ai2Scores, setAi2Scores] = useState(initialAIScores());
 
@@ -590,8 +575,8 @@ function InnovationWorkshop() {
     setCompanyName(""); setCompanyContext(""); setTeamName("");
     setQuestionScores(initialQuestionScores());
     setTypeEvidence(initialTypeEvidence());
-    setAi1Name("Claude"); setAi1Raw(""); setAi1Scores(initialAIScores());
-    setAi2Name("ChatGPT"); setAi2Raw(""); setAi2Scores(initialAIScores());
+    setAi1Name(""); setAi1Raw(""); setAi1Scores(initialAIScores());
+    setAi2Name(""); setAi2Raw(""); setAi2Scores(initialAIScores());
     setTacticRecs([]);
     try { await window.storage.delete(STORAGE_KEY); } catch (e) {}
   };
@@ -826,6 +811,7 @@ h1 { font-size: 26pt; color: #0F172A; margin: 0 0 4pt; font-weight: 700; letter-
 h2 { font-size: 16pt; color: #0F172A; margin: 22pt 0 8pt; font-weight: 600; padding-bottom: 4pt; border-bottom: 1pt solid #E2E8F0; }
 h3 { font-size: 12pt; margin: 14pt 0 4pt; font-weight: 600; }
 .subtitle { font-size: 12pt; color: #475569; margin: 4pt 0 2pt; font-weight: 500; }
+.qualifier { font-size: 11pt; color: #475569; margin: 2pt 0 6pt; font-style: italic; }
 .meta { font-size: 9pt; color: #94A3B8; letter-spacing: 0.04em; }
 .brand { font-size: 9pt; color: #3B82F6; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; margin-bottom: 8pt; }
 table { border-collapse: collapse; margin: 6pt 0 12pt; width: 100%; }
@@ -845,10 +831,9 @@ ul { margin: 4pt 0 8pt; padding-left: 22pt; }
 
 <div class="brand">Innovation Workshop · Doblin Ten Types</div>
 <h1>${escapeHTML(companyName || "Innovation Analysis")}</h1>
+${companyContext.trim() ? `<p class="qualifier">${escapeHTML(companyContext.trim())}</p>` : ""}
 <p class="subtitle">${teamName ? `Team: ${escapeHTML(teamName)} · ` : ""}Three-way assessment</p>
-<p class="meta">Generated ${escapeHTML(dateStr)} · Sources: Team scoring (43 questions), ${escapeHTML(ai1Name)}, ${escapeHTML(ai2Name)}</p>
-
-${companyContext.trim() ? `<div class="callout"><strong>Scoring context:</strong> ${escapeHTML(companyContext.trim())}</div>` : ""}
+<p class="meta">Generated ${escapeHTML(dateStr)} · Sources: Team scoring (43 questions), ${escapeHTML(ai1Name || "(model 1)")}, ${escapeHTML(ai2Name || "(model 2)")}</p>
 
 <h2>Score Comparison · 0–10 Scale</h2>
 <table class="scores">
@@ -894,6 +879,7 @@ ${detailedSections}
     const lines = [];
     lines.push(`INNOVATION WORKSHOP — TEAM SUMMARY`);
     lines.push(`Company: ${companyName || "(unnamed)"}`);
+    if (companyContext.trim()) lines.push(`Scope: ${companyContext.trim()}`);
     if (teamName) lines.push(`Team: ${teamName}`);
     lines.push(`Generated: ${new Date().toLocaleString()}`);
     lines.push("");
@@ -1321,11 +1307,11 @@ function PhaseSetup({ companyName, setCompanyName, companyContext, setCompanyCon
           />
         </Field>
 
-        <Field label="Context for the AI" hint="recommended">
+        <Field label="Scoring scope" hint="optional · appears in report">
           <textarea
             value={companyContext}
             onChange={(e) => setCompanyContext(e.target.value)}
-            placeholder="e.g., 'Score their B2B subscription line, not consumer.' or 'Score them as of 2025.'"
+            placeholder="e.g., 'B2B subscription line, not consumer' · 'as of 2025' · 'healthcare division only'"
             rows={3}
             className="iw-input"
           />
@@ -1597,6 +1583,8 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
   };
 
   const enteredCount = TYPES_ORDER.filter(t => typeof aiScores[t] === "number").length;
+  const trimmedName = aiName.trim();
+  const canProceed = aiComplete && trimmedName.length > 0;
 
   const copyPrompt = async () => {
     try {
@@ -1606,30 +1594,33 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
     } catch (e) {}
   };
 
-  const aiURL = aiName === "Claude" ? "claude.ai" : aiName === "ChatGPT" ? "chatgpt.com" : aiName === "Gemini" ? "gemini.google.com" : aiName === "Perplexity" ? "perplexity.ai" : "the model's interface";
-
   return (
     <div>
       <PhaseHeader
         num={phaseNum}
         title={phaseTitle}
         subtitle={otherAiName
-          ? `For triangulation, get a different AI's perspective. Try something other than ${otherAiName}.`
+          ? `For triangulation, get a different model's perspective. Use something other than ${otherAiName || "the first AI"}.`
           : "An independent assessment from an AI analyst."}
       />
 
-      <div style={{ display: "flex", alignItems: "center", gap: "0.85rem", margin: "1.25rem 0 1.5rem" }}>
-        <span className="label">AI Model</span>
-        <select value={aiName} onChange={(e) => setAiName(e.target.value)} className="iw-select">
-          {AI_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-        </select>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.85rem", margin: "1.25rem 0 1.5rem", flexWrap: "wrap" }}>
+        <span className="label" style={{ flexShrink: 0 }}>Model & Version</span>
+        <input
+          type="text"
+          value={aiName}
+          onChange={(e) => setAiName(e.target.value)}
+          placeholder="e.g., Claude Sonnet 4.6 · GPT-5 · Gemini 2.5 Pro · Llama 3.3 70B"
+          className="iw-input"
+          style={{ maxWidth: "480px", flex: 1, minWidth: "240px" }}
+        />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
         <Card>
-          <StepLabel num={`${stepNum}A`} title={`Send this prompt to ${aiName}`} />
+          <StepLabel num={`${stepNum}A`} title={trimmedName ? `Send this prompt to ${trimmedName}` : "Send this prompt to your AI"} />
           <p style={{ fontSize: "0.9rem", lineHeight: 1.55, color: C.textDim, margin: "0 0 1rem" }}>
-            Open <span className="mono" style={{ color: C.accentBright }}>{aiURL}</span> in a new tab and paste the prompt below.
+            Open your model's chat interface in a new tab and paste the prompt below.
           </p>
 
           <div style={{ position: "relative" }}>
@@ -1673,7 +1664,7 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
         </Card>
 
         <Card>
-          <StepLabel num={`${stepNum}B`} title={`Paste ${aiName}'s response`} />
+          <StepLabel num={`${stepNum}B`} title={trimmedName ? `Paste ${trimmedName}'s response` : "Paste the AI's response"} />
           <p style={{ fontSize: "0.9rem", lineHeight: 1.55, color: C.textDim, margin: "0 0 1rem" }}>
             Paste the full reply. Scores are auto-extracted; verify or fix any that didn't parse.
           </p>
@@ -1681,7 +1672,7 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
           <textarea
             value={aiRaw}
             onChange={(e) => setAiRaw(e.target.value)}
-            placeholder={`Paste ${aiName}'s full response here...`}
+            placeholder={trimmedName ? `Paste ${trimmedName}'s full response here...` : "Paste the AI's full response here..."}
             rows={10}
             className="iw-input"
             style={{ fontSize: "0.88rem", minHeight: "200px", fontFamily: 'inherit' }}
@@ -1716,8 +1707,12 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
 
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2rem" }}>
         <SecondaryButton onClick={onBack}><ChevronLeft size={15} /> Back</SecondaryButton>
-        <PrimaryButton onClick={onContinue} disabled={!aiComplete}>
-          {aiComplete ? continueLabel : `Enter all 10 (${enteredCount}/10)`} <ChevronRight size={15} />
+        <PrimaryButton onClick={onContinue} disabled={!canProceed}>
+          {!trimmedName
+            ? "Enter the model name"
+            : aiComplete
+              ? continueLabel
+              : `Enter all 10 (${enteredCount}/10)`} <ChevronRight size={15} />
         </PrimaryButton>
       </div>
     </div>
@@ -2403,9 +2398,6 @@ function ExportRow({ icon, title, subtitle, onClick, primary, done }) {
   );
 }
 
-    // ============================================================
-    // Boot
-    // ============================================================
     const rootEl = document.getElementById("root");
     rootEl.setAttribute("data-iw-mounted", "true");
     createRoot(rootEl).render(<InnovationWorkshop />);
