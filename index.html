@@ -969,7 +969,6 @@ table.scores td { padding: 6pt 10pt; border-bottom: 0.5pt solid #E2E8F0; font-si
 table:not(.scores) td { padding: 4pt 8pt; border-bottom: 0.25pt solid #F1F5F9; font-size: 10pt; }
 .totals-row { background: #F8FAFC; font-weight: 600; }
 .callout { padding: 10pt 14pt; background: #EFF6FF; border-left: 3pt solid #3B82F6; margin: 8pt 0; font-size: 10.5pt; color: #1E3A8A; }
-.ai-block { background: #F8FAFC; border: 0.5pt solid #E2E8F0; padding: 8pt 10pt; font-family: Consolas, monospace; font-size: 9pt; white-space: pre-wrap; color: #334155; }
 ul { margin: 4pt 0 8pt; padding-left: 22pt; }
 .footer-note { margin-top: 24pt; padding-top: 8pt; border-top: 0.5pt solid #E2E8F0; font-size: 9pt; color: #94A3B8; font-style: italic; }
 </style>
@@ -1027,12 +1026,6 @@ ${detailedSections}
 <p style="font-size:10.5pt;color:#334155;">${escapeHTML(ai1Parsed.summary || "(no summary paragraph found)")}</p>
 <h3 style="color:${ai2ColorHex};">${escapeHTML(ai2Name)}</h3>
 <p style="font-size:10.5pt;color:#334155;">${escapeHTML(ai2Parsed.summary || "(no summary paragraph found)")}</p>
-
-<h2>Appendix · Raw AI Responses</h2>
-<h3>${escapeHTML(ai1Name)}</h3>
-<div class="ai-block">${escapeHTML(ai1Raw || "(none)")}</div>
-<h3>${escapeHTML(ai2Name)}</h3>
-<div class="ai-block">${escapeHTML(ai2Raw || "(none)")}</div>
 
 <p class="footer-note">Innovation Workshop ${APP_VERSION} · Adapted from Keeley, Pikkel, Quinn &amp; Walters · Ten Types of Innovation · 2013</p>
 
