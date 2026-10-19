@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Innovation Workshop · Doblin Ten Types</title>
+  <title>Innovation Workshop · Doblin Ten Types · v10</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233B82F6'/%3E%3Cpath d='M16 7l2.4 5.6L24 14l-5.6 2.4L16 22l-2.4-5.6L8 14l5.6-1.4L16 7z' fill='white'/%3E%3C/svg%3E">
   <style>
     html, body { margin: 0; padding: 0; background: #0A0E14; min-height: 100vh; }
@@ -112,7 +112,6 @@
         }
       };
     }
-
 
 // ============================================================
 // DESIGN TOKENS
@@ -351,7 +350,31 @@ const PHASES = [
   { num: "07", title: "Take-Away",            time: "2 min" },
 ];
 
-const STORAGE_KEY = "innovation_workshop_v3";
+const NQ = QUESTIONS.length; // 44: Brand has five questions, every other type four (Profit Model seven)
+const STORAGE_KEY = "innovation_workshop_v10";
+const APP_VERSION = "v10";
+
+// A type counts as "strong" (an active innovation type) at or above this 0–10 score.
+// 7.0 ≈ consistently Medium-to-High answers across that type's questions.
+const STRONG_THRESHOLD = 7;
+
+// Short codes used in the AI prompt so responses can be parsed question-by-question.
+const TYPE_CODES = {
+  "Profit Model": "PM", "Network": "NW", "Structure": "ST", "Process": "PR",
+  "Product Performance": "PP", "Product System": "PS",
+  "Service": "SV", "Channel": "CH", "Brand": "BR", "Customer Engagement": "CE",
+};
+const CODE_TO_TYPE = Object.fromEntries(Object.entries(TYPE_CODES).map(([t, c]) => [c, t]));
+
+// Shared 0–3 rubric — the team and both AIs score against the same anchors.
+const RUBRIC = [
+  { n: 0, label: "None",   desc: "No evidence, or no different from industry norms" },
+  { n: 1, label: "Low",    desc: "Minor or isolated differences" },
+  { n: 2, label: "Medium", desc: "Clear, meaningful difference from competitors" },
+  { n: 3, label: "High",   desc: "Distinctive — industry-leading or industry-redefining" },
+];
+
+const CATEGORIES = ["Configuration", "Offering", "Experience"];
 
 // ============================================================
 // HELPERS
@@ -373,11 +396,42 @@ const initialTypeEvidence = () => {
   return obj;
 };
 
-const initialAIScores = () => {
-  const obj = {};
-  TYPES_ORDER.forEach(t => { obj[t] = null; });
-  return obj;
+// Roll a question-score map (keys "Type:i", values 0–3) up to 0–10 type scores.
+// A type gets a score only when every one of its questions is answered.
+const rollUpTypeScores = (qs) => {
+  const out = {};
+  TYPES_ORDER.forEach(t => {
+    const r = computeTypeScore(t, qs);
+    out[t] = r.scored === r.total ? r.score : null;
+  });
+  return out;
 };
+
+// Total Innovation Score: sum of the ten 0–10 type scores → 0–100. Null until all ten are complete.
+const totalFromTypeScores = (typeScores) => {
+  const vals = TYPES_ORDER.map(t => typeScores[t]);
+  if (vals.some(v => typeof v !== "number")) return null;
+  return vals.reduce((a, b) => a + b, 0);
+};
+
+const countStrong = (typeScores) =>
+  TYPES_ORDER.filter(t => typeof typeScores[t] === "number" && typeScores[t] >= STRONG_THRESHOLD).length;
+
+const questionCode = (typeName, i) => `${TYPE_CODES[typeName]}${i + 1}`;
+
+// Structured tactic recommendation. Older saves stored a single "justification" string.
+const TACTIC_FIELDS = [
+  { key: "gap",      label: "Gap it addresses",       placeholder: "Which weakness or untapped opportunity does this tactic attack?" },
+  { key: "evidence", label: "Evidence",               placeholder: "Cite your scoring or the AI responses — e.g., 'SV3 scored 0 by team and both AIs: no distinctive warranty.'" },
+  { key: "adoption", label: "What adoption requires", placeholder: "Capability, investment, partner, or what the company would have to stop doing." },
+];
+const normalizeTactic = (r) => ({
+  type: r.type, name: r.name,
+  gap: r.gap ?? r.justification ?? "",
+  evidence: r.evidence ?? "",
+  adoption: r.adoption ?? "",
+});
+const tacticComplete = (r) => TACTIC_FIELDS.every(f => (r[f.key] || "").trim().length > 0);
 
 const computeTypeScore = (typeName, qs) => {
   const w = WEIGHTS[typeName];
@@ -395,49 +449,72 @@ const computeTypeScore = (typeName, qs) => {
   return { score: sum, scored, total: idxs.length };
 };
 
-const parseAIScores = (text) => {
-  const out = {};
-  TYPES_ORDER.forEach(t => { out[t] = null; });
-  if (!text) return out;
-  const lines = text.split(/\n/);
-  for (const line of lines) {
-    for (const t of TYPES_ORDER) {
-      const re = new RegExp(`^\\s*[\\*\\-•·]?\\s*\\*?\\*?${t.replace(/\s+/g, "\\s+")}\\*?\\*?\\s*[:\\-—]\\s*(\\d+(?:\\.\\d+)?)`, "i");
-      const m = line.match(re);
-      if (m) {
-        const v = parseFloat(m[1]);
-        if (!isNaN(v) && v >= 0 && v <= 10) out[t] = v;
+// Parse an AI response that answers the diagnostic questions as lines like
+//   "PM1: 2 | evidence"   — also tolerates markdown bold, bullets, tables ("| PM1 | 2 | evidence |"),
+//   "PM-1 = 2 — evidence", "PM1 (2/3): evidence", and echoed question text before the score.
+// Returns { scores: { "Type:i": 0–3 }, evidence: { "Type:i": "..." }, summary: "..." }.
+const parseAIResponse = (text) => {
+  const scores = {};
+  const evidence = {};
+  if (!text) return { scores, evidence, summary: "" };
+  const codeRe = /(?:^|[^A-Za-z])(PM|NW|ST|PR|PP|PS|SV|CH|BR|CE)\s*[-_.]?\s*(\d)(?!\d)/i;
+  const leftover = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\*\*|__|`/g, "");
+    const m = line.match(codeRe);
+    let matched = false;
+    if (m && m.index <= 12) {
+      const typeName = CODE_TO_TYPE[m[1].toUpperCase()];
+      const qIdx = parseInt(m[2], 10) - 1;
+      const nQ = QUESTIONS.filter(q => q.type === typeName).length;
+      if (typeName && qIdx >= 0 && qIdx < nQ) {
+        const rest = line.slice(m.index + m[0].length);
+        // 1) Score immediately after the code: "PM1: 2 | ..." / "| PM1 | 2 |" / "PM1 (2/3)"
+        let sm = rest.match(/^[\s:=|.)(\]\-–—]*([0-3])(?:\.0+)?(?!\d)\s*(?:\/\s*3)?\s*\)?(.*)$/);
+        // 2) Fallback: question text echoed first, score after a separator: "PM1. Does ...? — 2 | ..."
+        if (!sm) sm = rest.match(/(?:[:|—–=]|score\s*[:=]?)\s*([0-3])(?:\.0+)?(?!\d)\s*(?:\/\s*3)?\s*(?:[|—–:\-]\s*(.*)|$)/i);
+        if (sm) {
+          const key = `${typeName}:${qIdx}`;
+          scores[key] = parseInt(sm[1], 10);
+          const ev = (sm[2] || "").replace(/^[\s|:\-–—]+/, "").replace(/[\s|]+$/, "").trim();
+          if (ev) evidence[key] = ev;
+          matched = true;
+        }
       }
     }
+    if (!matched) leftover.push(rawLine);
   }
-  return out;
+  // The strength/gap paragraph: longest leftover paragraph that isn't a header.
+  const paras = leftover.join("\n").split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length > 80);
+  const summary = paras.sort((a, b) => b.length - a.length)[0] || "";
+  return { scores, evidence, summary };
 };
 
 const buildAIPrompt = (companyName, companyContext) => {
-  const ctx = companyContext.trim()
-    ? `\n\nContext provided by the team: ${companyContext.trim()}`
-    : "";
-  return `You are an expert innovation analyst. Score ${companyName || "[COMPANY NAME]"} on Larry Keeley's Doblin Ten Types of Innovation framework, based on publicly available information.${ctx}
+  const name = companyName || "[COMPANY NAME]";
+  const asOf = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const scope = companyContext.trim() ? `\nScope set by the team: ${companyContext.trim()}\n` : "";
+  const qBlock = TYPES_ORDER.map(t => {
+    const qs = QUESTIONS.filter(q => q.type === t);
+    return `${t.toUpperCase()}\n` + qs.map((q, i) => `${questionCode(t, i)}. ${q.text}`).join("\n");
+  }).join("\n\n");
+  return `You are an expert innovation analyst. Assess ${name} using Larry Keeley's Doblin Ten Types of Innovation framework (Keeley et al., 2013). Use publicly available information as of ${asOf}. If you can search the web, do so before answering.
+${scope}
+Answer each of the ${NQ} diagnostic questions below on this 0–3 scale, judged relative to direct competitors and industry norms:
+${RUBRIC.map(r => `  ${r.n} = ${r.label} — ${r.desc}`).join("\n")}
+If you cannot find public evidence for a question, score it 0 and write "no public evidence".
 
-For each of the 10 types, give a score from 0 to 10:
-  0 = absent / no innovation visible in this type
-  5 = industry-normal
-  10 = industry-redefining
+Return exactly one line per question, in this format, using the code shown:
+CODE: SCORE | one-sentence evidence
 
-Return your scores in this exact format, one per line, numbers only:
+Example:
+PM1: 2 | Sells hardware near cost and earns most of its margin on subscriptions.
 
-Profit Model: X
-Network: X
-Structure: X
-Process: X
-Product Performance: X
-Product System: X
-Service: X
-Channel: X
-Brand: X
-Customer Engagement: X
+Rules: list all ${NQ} codes in order; do not use a table; do not add type totals or 0–10 scores (the workshop calculates those).
 
-Then in a single short paragraph (3–4 sentences), name the company's BIGGEST innovation strength and BIGGEST gap, with one concrete piece of evidence for each.`;
+${qBlock}
+
+After the ${NQ} lines, write one short paragraph (3–4 sentences) naming the company's single biggest innovation strength and single biggest gap, with one concrete piece of evidence for each.`;
 };
 
 const escapeHTML = (s) => String(s ?? "")
@@ -461,11 +538,11 @@ function InnovationWorkshop() {
 
   const [ai1Name, setAi1Name] = useState("");
   const [ai1Raw, setAi1Raw] = useState("");
-  const [ai1Scores, setAi1Scores] = useState(initialAIScores());
+  const [ai1Edits, setAi1Edits] = useState({}); // manual per-question fixes, override parsed scores
 
   const [ai2Name, setAi2Name] = useState("");
   const [ai2Raw, setAi2Raw] = useState("");
-  const [ai2Scores, setAi2Scores] = useState(initialAIScores());
+  const [ai2Edits, setAi2Edits] = useState({});
 
   const [tacticRecs, setTacticRecs] = useState([]);
 
@@ -489,11 +566,11 @@ function InnovationWorkshop() {
           if (s.typeEvidence) setTypeEvidence(s.typeEvidence);
           if (s.ai1Name) setAi1Name(s.ai1Name);
           if (s.ai1Raw) setAi1Raw(s.ai1Raw);
-          if (s.ai1Scores) setAi1Scores(s.ai1Scores);
+          if (s.ai1Edits) setAi1Edits(s.ai1Edits);
           if (s.ai2Name) setAi2Name(s.ai2Name);
           if (s.ai2Raw) setAi2Raw(s.ai2Raw);
-          if (s.ai2Scores) setAi2Scores(s.ai2Scores);
-          if (s.tacticRecs) setTacticRecs(s.tacticRecs);
+          if (s.ai2Edits) setAi2Edits(s.ai2Edits);
+          if (s.tacticRecs) setTacticRecs(s.tacticRecs.map(normalizeTactic));
           if (typeof s.phase === "number") setPhase(s.phase);
         }
       } catch (e) {}
@@ -509,17 +586,21 @@ function InnovationWorkshop() {
         await window.storage.set(STORAGE_KEY, JSON.stringify({
           phase, companyName, companyContext, teamName,
           questionScores, typeEvidence,
-          ai1Name, ai1Raw, ai1Scores, ai2Name, ai2Raw, ai2Scores,
+          ai1Name, ai1Raw, ai1Edits, ai2Name, ai2Raw, ai2Edits,
           tacticRecs,
         }));
       } catch (e) {}
     })();
   }, [phase, companyName, companyContext, teamName, questionScores, typeEvidence,
-      ai1Name, ai1Raw, ai1Scores, ai2Name, ai2Raw, ai2Scores, tacticRecs, loaded]);
+      ai1Name, ai1Raw, ai1Edits, ai2Name, ai2Raw, ai2Edits, tacticRecs, loaded]);
 
-  // Re-parse AI raw on change
-  useEffect(() => { setAi1Scores(parseAIScores(ai1Raw)); }, [ai1Raw]);
-  useEffect(() => { setAi2Scores(parseAIScores(ai2Raw)); }, [ai2Raw]);
+  // Parse AI responses question-by-question, apply manual fixes, roll up to type scores
+  const ai1Parsed = useMemo(() => parseAIResponse(ai1Raw), [ai1Raw]);
+  const ai2Parsed = useMemo(() => parseAIResponse(ai2Raw), [ai2Raw]);
+  const ai1Q = useMemo(() => ({ ...ai1Parsed.scores, ...ai1Edits }), [ai1Parsed, ai1Edits]);
+  const ai2Q = useMemo(() => ({ ...ai2Parsed.scores, ...ai2Edits }), [ai2Parsed, ai2Edits]);
+  const ai1Scores = useMemo(() => rollUpTypeScores(ai1Q), [ai1Q]);
+  const ai2Scores = useMemo(() => rollUpTypeScores(ai2Q), [ai2Q]);
 
   // Computed
   const teamTypeScores = useMemo(() => {
@@ -527,6 +608,44 @@ function InnovationWorkshop() {
     TYPES_ORDER.forEach(t => { obj[t] = computeTypeScore(t, questionScores); });
     return obj;
   }, [questionScores]);
+
+  const teamTypeFinal = useMemo(() => {
+    const obj = {};
+    TYPES_ORDER.forEach(t => { const s = teamTypeScores[t]; obj[t] = s.scored === s.total ? s.score : null; });
+    return obj;
+  }, [teamTypeScores]);
+
+  const teamTotal = useMemo(() => totalFromTypeScores(teamTypeFinal), [teamTypeFinal]);
+  const ai1Total = useMemo(() => totalFromTypeScores(ai1Scores), [ai1Scores]);
+  const ai2Total = useMemo(() => totalFromTypeScores(ai2Scores), [ai2Scores]);
+
+  // Question-level three-way comparison (the payoff of using one instrument for all three sources)
+  const questionGaps = useMemo(() => {
+    const rows = [];
+    TYPES_ORDER.forEach(t => {
+      QUESTIONS.filter(q => q.type === t).forEach((q, i) => {
+        const key = `${t}:${i}`;
+        const team = questionScores[key], a1 = ai1Q[key], a2 = ai2Q[key];
+        if (typeof team !== "number" || typeof a1 !== "number" || typeof a2 !== "number") return;
+        const aiMean = (a1 + a2) / 2;
+        rows.push({
+          key, type: t, idx: i, code: questionCode(t, i), text: q.text,
+          team, ai1: a1, ai2: a2,
+          teamVsAI: team - aiMean,
+          aiSpread: Math.abs(a1 - a2),
+          ev1: ai1Parsed.evidence[key] || "", ev2: ai2Parsed.evidence[key] || "",
+        });
+      });
+    });
+    return rows;
+  }, [questionScores, ai1Q, ai2Q, ai1Parsed, ai2Parsed]);
+
+  // Five-type threshold projection: strong types now (team) + weak types the chosen tactics attack
+  const projectedStrong = useMemo(() => {
+    const set = new Set(TYPES_ORDER.filter(t => typeof teamTypeFinal[t] === "number" && teamTypeFinal[t] >= STRONG_THRESHOLD));
+    tacticRecs.forEach(r => set.add(r.type));
+    return set.size;
+  }, [teamTypeFinal, tacticRecs]);
 
   const teamComplete = useMemo(() => {
     return TYPES_ORDER.every(t => teamTypeScores[t].scored === teamTypeScores[t].total);
@@ -575,8 +694,8 @@ function InnovationWorkshop() {
     setCompanyName(""); setCompanyContext(""); setTeamName("");
     setQuestionScores(initialQuestionScores());
     setTypeEvidence(initialTypeEvidence());
-    setAi1Name(""); setAi1Raw(""); setAi1Scores(initialAIScores());
-    setAi2Name(""); setAi2Raw(""); setAi2Scores(initialAIScores());
+    setAi1Name(""); setAi1Raw(""); setAi1Edits({});
+    setAi2Name(""); setAi2Raw(""); setAi2Edits({});
     setTacticRecs([]);
     try { await window.storage.delete(STORAGE_KEY); } catch (e) {}
   };
@@ -588,6 +707,11 @@ function InnovationWorkshop() {
   const buildWordHTML = () => {
     const dateStr = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
     const catColorHex = (cat) => ({ Configuration: "#7C3AED", Offering: "#059669", Experience: "#EA580C" })[cat];
+    const teamColorHex = "#EA580C";
+    const ai1ColorHex = "#059669";
+    const ai2ColorHex = "#7C3AED";
+    const fmt = (v) => v !== null && v !== undefined && !isNaN(v) ? v.toFixed(2) : "—";
+    const fmt1 = (v) => v !== null && v !== undefined && !isNaN(v) ? v.toFixed(1) : "—";
 
     const scoreRows = TYPES_ORDER.map(t => {
       const team = teamTypeScores[t];
@@ -604,38 +728,42 @@ function InnovationWorkshop() {
       </tr>`;
     }).join("\n");
 
+    const recCats = [...new Set(tacticRecs.map(r => TYPE_INFO[r.type].category))];
     const tacticBlocks = tacticRecs.length ? tacticRecs.map((r, i) => {
       const cat = TYPE_INFO[r.type].category;
       const cc = catColorHex(cat);
+      const tdef = TACTICS.find(x => x.type === r.type && x.name === r.name);
+      const fieldRows = TACTIC_FIELDS.map(f => `<p style="font-size:10.5pt;color:#334155;margin:3pt 0;"><strong style="color:#0F172A;">${f.label}:</strong> ${escapeHTML((r[f.key] || "").trim() || "(not recorded)")}</p>`).join("");
+      const ts = teamTypeFinal[r.type], s1 = ai1Scores[r.type], s2 = ai2Scores[r.type];
       return `<div style="border-left:3pt solid ${cc};padding:8pt 14pt;margin:8pt 0;background:#F8FAFC;">
-        <div style="font-size:9pt;color:#64748B;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2pt;">${String(i+1).padStart(2,"0")} · ${escapeHTML(r.type)} · <span style="color:${cc};">${cat}</span></div>
-        <div style="font-size:13pt;font-weight:600;color:#0F172A;margin-bottom:4pt;">${escapeHTML(r.name)}</div>
-        <div style="font-size:11pt;color:#334155;font-style:italic;">${escapeHTML(r.justification || "(no justification recorded)")}</div>
+        <div style="font-size:9pt;color:#64748B;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2pt;">${String(i+1).padStart(2,"0")} · ${escapeHTML(r.type)} · <span style="color:${cc};">${cat}</span> · Team ${fmt(ts)} / ${escapeHTML(ai1Name)} ${fmt(s1)} / ${escapeHTML(ai2Name)} ${fmt(s2)}</div>
+        <div style="font-size:13pt;font-weight:600;color:#0F172A;margin-bottom:2pt;">${escapeHTML(r.name)}</div>
+        ${tdef ? `<div style="font-size:9.5pt;color:#64748B;font-style:italic;margin-bottom:4pt;">${escapeHTML(tdef.desc)}</div>` : ""}
+        ${fieldRows}
       </div>`;
-    }).join("\n") : `<p style="color:#64748B;font-style:italic;">No tactics recorded.</p>`;
+    }).join("\n") + `<p style="font-size:9.5pt;color:#64748B;margin-top:6pt;">Categories covered: ${recCats.join(", ") || "—"}${recCats.length === 1 && tacticRecs.length > 1 ? " (single-category portfolio)" : ""}. Projected strong types if adopted (team scoring): ${countStrong(teamTypeFinal)} → ${projectedStrong}.</p>`
+      : `<p style="color:#64748B;font-style:italic;">No tactics recorded.</p>`;
 
+    const qCell = (v, color) => `<td class="num" style="width:34pt;color:${color};font-weight:600;">${typeof v === "number" ? v : "—"}</td>`;
     const detailedSections = TYPES_ORDER.map(t => {
       const cat = TYPE_INFO[t].category;
       const cc = catColorHex(cat);
       const qs = QUESTIONS.filter(q => q.type === t);
-      const team = teamTypeScores[t];
-      const teamStr = team.scored === team.total ? team.score.toFixed(2) : "—";
       const qRows = qs.map((q, i) => {
-        const v = questionScores[`${t}:${i}`];
-        return `<tr><td style="width:36pt;"><strong>Q${i+1}</strong></td><td>${escapeHTML(q.text)}</td><td class="num" style="width:42pt;">${typeof v === "number" ? `${v}/3` : "—"}</td></tr>`;
+        const key = `${t}:${i}`;
+        const e1 = ai1Parsed.evidence[key], e2 = ai2Parsed.evidence[key];
+        const evLines = (e1 || e2) ? `<div style="font-size:8.5pt;color:#64748B;margin-top:2pt;">${e1 ? `<span style="color:${ai1ColorHex};font-weight:600;">${escapeHTML(ai1Name)}:</span> ${escapeHTML(e1)}` : ""}${e1 && e2 ? "<br/>" : ""}${e2 ? `<span style="color:${ai2ColorHex};font-weight:600;">${escapeHTML(ai2Name)}:</span> ${escapeHTML(e2)}` : ""}</div>` : "";
+        return `<tr><td style="width:34pt;"><strong>${questionCode(t, i)}</strong></td><td>${escapeHTML(q.text)}${evLines}</td>${qCell(questionScores[key], teamColorHex)}${qCell(ai1Q[key], ai1ColorHex)}${qCell(ai2Q[key], ai2ColorHex)}</tr>`;
       }).join("\n");
       const evidenceRow = typeEvidence[t]
-        ? `<p style="font-size:10pt;color:#475569;margin-top:4pt;"><strong style="color:${cc};">Evidence:</strong> <em>${escapeHTML(typeEvidence[t])}</em></p>`
+        ? `<p style="font-size:10pt;color:#475569;margin-top:4pt;"><strong style="color:${cc};">Team evidence:</strong> <em>${escapeHTML(typeEvidence[t])}</em></p>`
         : "";
-      return `<h3 style="color:${cc};">${escapeHTML(t)} <span style="font-size:10pt;color:#94A3B8;font-weight:normal;">· ${cat} · ${teamStr}/10</span></h3>
-        <table>${qRows}</table>
+      return `<h3 style="color:${cc};">${escapeHTML(t)} <span style="font-size:10pt;color:#94A3B8;font-weight:normal;">· ${cat} · Team ${fmt(teamTypeFinal[t])} · ${escapeHTML(ai1Name)} ${fmt(ai1Scores[t])} · ${escapeHTML(ai2Name)} ${fmt(ai2Scores[t])}</span></h3>
+        <table><tr><td></td><td style="font-size:8.5pt;color:#94A3B8;">Question</td><td class="num" style="font-size:8.5pt;color:${teamColorHex};">Team</td><td class="num" style="font-size:8.5pt;color:${ai1ColorHex};">AI 1</td><td class="num" style="font-size:8.5pt;color:${ai2ColorHex};">AI 2</td></tr>${qRows}</table>
         ${evidenceRow}`;
     }).join("\n");
 
     // ----- Triangulation section -----
-    const teamColorHex = "#EA580C";
-    const ai1ColorHex = "#059669";
-    const ai2ColorHex = "#7C3AED";
 
     // Pull score arrays for each source; nulls excluded from stats
     const teamScoresArr = TYPES_ORDER.map(t => teamTypeScores[t].scored === teamTypeScores[t].total ? teamTypeScores[t].score : null).filter(v => v !== null);
@@ -653,21 +781,19 @@ function InnovationWorkshop() {
     const ai1SD = stdDev(ai1ScoresArr);
     const ai2SD = stdDev(ai2ScoresArr);
 
-    const fmt = (v) => v !== null && v !== undefined && !isNaN(v) ? v.toFixed(2) : "—";
-
-    const avgTile = (label, value, sd, color) => `
+    const avgTile = (label, total, value, sd, strong, color) => `
       <td style="width:33.3%;border-top:2pt solid ${color};padding:10pt 14pt;background:#F8FAFC;">
         <div style="font-size:9pt;color:#64748B;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin-bottom:3pt;">${label}</div>
-        <div style="font-size:22pt;color:${color};font-family:Consolas,monospace;font-weight:600;line-height:1.1;">${fmt(value)}<span style="font-size:11pt;color:#94A3B8;font-weight:400;">/10</span></div>
-        <div style="font-size:9pt;color:#64748B;font-family:Consolas,monospace;margin-top:5pt;">SD <strong style="color:#475569;">${fmt(sd)}</strong></div>
+        <div style="font-size:22pt;color:${color};font-family:Consolas,monospace;font-weight:600;line-height:1.1;">${fmt1(total)}<span style="font-size:11pt;color:#94A3B8;font-weight:400;">/100</span></div>
+        <div style="font-size:9pt;color:#64748B;font-family:Consolas,monospace;margin-top:5pt;">Avg <strong style="color:#475569;">${fmt(value)}</strong> · SD <strong style="color:#475569;">${fmt(sd)}</strong> · Strong types <strong style="color:#475569;">${strong}</strong></div>
       </td>`;
 
     const avgsRow = `
       <table style="width:100%;border-collapse:separate;border-spacing:6pt 0;margin:8pt 0 14pt;">
         <tr>
-          ${avgTile("Team", teamAvg, teamSD, teamColorHex)}
-          ${avgTile(`${escapeHTML(ai1Name)}`, ai1Avg, ai1SD, ai1ColorHex)}
-          ${avgTile(`${escapeHTML(ai2Name)}`, ai2Avg, ai2SD, ai2ColorHex)}
+          ${avgTile("Team", teamTotal, teamAvg, teamSD, countStrong(teamTypeFinal), teamColorHex)}
+          ${avgTile(`${escapeHTML(ai1Name)}`, ai1Total, ai1Avg, ai1SD, countStrong(ai1Scores), ai1ColorHex)}
+          ${avgTile(`${escapeHTML(ai2Name)}`, ai2Total, ai2Avg, ai2SD, countStrong(ai2Scores), ai2ColorHex)}
         </tr>
       </table>`;
 
@@ -771,11 +897,32 @@ function InnovationWorkshop() {
       ${patternBlock("Team vs. AIs", "Team disagrees with AI consensus", "#EA580C", teamVsAIsItems, c => `Team ${c.teamVsAI > 0 ? "higher" : "lower"} by ${Math.abs(c.teamVsAI).toFixed(1)}`)}
       ${patternBlock("AIs Disagree", `${ai1Name} vs ${ai2Name}`, "#7C3AED", aisDisagreeItems, c => `AI spread: ${c.aiSpread.toFixed(1)}`)}`;
 
+    const qGapTeam = [...questionGaps].filter(g => Math.abs(g.teamVsAI) >= 1.5).sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI)).slice(0, 6);
+    const qGapAI = [...questionGaps].filter(g => g.aiSpread >= 2).sort((a, b) => b.aiSpread - a.aiSpread).slice(0, 4);
+    const qGapRow = (g, note) => `<tr>
+        <td style="width:34pt;vertical-align:top;"><strong>${g.code}</strong></td>
+        <td style="vertical-align:top;">${escapeHTML(g.text)}
+          <div style="font-size:8.5pt;color:#64748B;margin-top:2pt;">${note}</div>
+          ${g.ev1 ? `<div style="font-size:8.5pt;color:#64748B;"><span style="color:${ai1ColorHex};font-weight:600;">${escapeHTML(ai1Name)}:</span> ${escapeHTML(g.ev1)}</div>` : ""}
+          ${g.ev2 ? `<div style="font-size:8.5pt;color:#64748B;"><span style="color:${ai2ColorHex};font-weight:600;">${escapeHTML(ai2Name)}:</span> ${escapeHTML(g.ev2)}</div>` : ""}
+        </td>
+        ${qCell(g.team, teamColorHex)}${qCell(g.ai1, ai1ColorHex)}${qCell(g.ai2, ai2ColorHex)}
+      </tr>`;
+    const qHeader = `<tr><td></td><td style="font-size:8.5pt;color:#94A3B8;">Question</td><td class="num" style="font-size:8.5pt;color:${teamColorHex};">Team</td><td class="num" style="font-size:8.5pt;color:${ai1ColorHex};">AI 1</td><td class="num" style="font-size:8.5pt;color:${ai2ColorHex};">AI 2</td></tr>`;
+    const questionSection = questionGaps.length ? `
+<h3 style="font-size:11pt;color:#0F172A;">Question-Level Disagreements</h3>
+<p style="font-size:9.5pt;color:#64748B;margin:0 0 4pt;">All three sources answered the same ${NQ} questions on the same 0–3 scale, so gaps can be traced to specific questions.</p>
+<p style="font-size:10pt;font-weight:600;color:${teamColorHex};margin:8pt 0 2pt;">Team vs. AIs (gap ≥ 1.5 points)</p>
+${qGapTeam.length ? `<table>${qHeader}${qGapTeam.map(g => qGapRow(g, `Team ${g.teamVsAI > 0 ? "higher" : "lower"} than the AI average by ${Math.abs(g.teamVsAI).toFixed(1)}`)).join("")}</table>` : `<p style="font-size:9pt;color:#94A3B8;font-style:italic;">None.</p>`}
+<p style="font-size:10pt;font-weight:600;color:${ai2ColorHex};margin:8pt 0 2pt;">AIs disagree (spread ≥ 2 points)</p>
+${qGapAI.length ? `<table>${qHeader}${qGapAI.map(g => qGapRow(g, `AI spread ${g.aiSpread}`)).join("")}</table>` : `<p style="font-size:9pt;color:#94A3B8;font-style:italic;">None.</p>`}
+` : "";
+
     const triangulationSection = triangulation.length > 0 ? `
 <h2>Triangulation</h2>
 <p style="font-size:10pt;color:#64748B;margin:0 0 4pt;">Three perspectives on ${escapeHTML(companyName || "the company")}'s innovation profile — the team's collective scoring, ${escapeHTML(ai1Name)}'s independent assessment, and ${escapeHTML(ai2Name)}'s.</p>
 
-<h3 style="margin-top:14pt;font-size:11pt;color:#0F172A;">Average Scores by Source</h3>
+<h3 style="margin-top:14pt;font-size:11pt;color:#0F172A;">Total Innovation Score by Source · 0–100</h3>
 ${avgsRow}
 
 <h3 style="font-size:11pt;color:#0F172A;">Score by Type · Three-Way Comparison</h3>
@@ -785,6 +932,7 @@ ${chartTable}
 <div style="page-break-inside:avoid;mso-page-break-inside:avoid;">
 ${patternsTable}
 </div>
+${questionSection}
 ` : `
 <h2>Triangulation</h2>
 <p style="font-size:10pt;color:#64748B;font-style:italic;">Triangulation requires complete scoring from the team and both AI analysts. This section is empty because at least one source did not score every type.</p>
@@ -833,12 +981,24 @@ ul { margin: 4pt 0 8pt; padding-left: 22pt; }
 <h1>${escapeHTML(companyName || "Innovation Analysis")}</h1>
 ${companyContext.trim() ? `<p class="qualifier">${escapeHTML(companyContext.trim())}</p>` : ""}
 <p class="subtitle">${teamName ? `Team: ${escapeHTML(teamName)} · ` : ""}Three-way assessment</p>
-<p class="meta">Generated ${escapeHTML(dateStr)} · Sources: Team scoring (43 questions), ${escapeHTML(ai1Name || "(model 1)")}, ${escapeHTML(ai2Name || "(model 2)")}</p>
+<p class="meta">Generated ${escapeHTML(dateStr)} · Sources: Team, ${escapeHTML(ai1Name || "(model 1)")}, and ${escapeHTML(ai2Name || "(model 2)")} — each scored all ${NQ} questions (0–3)</p>
 
 <h2>Score Comparison · 0–10 Scale</h2>
 <table class="scores">
 <tr><th>Innovation Type</th><th>Category</th><th class="num">Team</th><th class="num">${escapeHTML(ai1Name)}</th><th class="num">${escapeHTML(ai2Name)}</th></tr>
 ${scoreRows}
+<tr class="totals-row" style="background:#EFF6FF;">
+  <td colspan="2"><strong>Total Innovation Score (0–100)</strong></td>
+  <td class="num"><strong>${fmt1(teamTotal)}</strong></td>
+  <td class="num"><strong>${fmt1(ai1Total)}</strong></td>
+  <td class="num"><strong>${fmt1(ai2Total)}</strong></td>
+</tr>
+<tr class="totals-row">
+  <td colspan="2"><strong>Strong types (≥ ${STRONG_THRESHOLD})</strong></td>
+  <td class="num">${countStrong(teamTypeFinal)}</td>
+  <td class="num">${countStrong(ai1Scores)}</td>
+  <td class="num">${countStrong(ai2Scores)}</td>
+</tr>
 <tr class="totals-row">
   <td colspan="2"><strong>Average</strong></td>
   <td class="num">${teamAvg !== null ? teamAvg.toFixed(2) : "—"}</td>
@@ -859,16 +1019,22 @@ ${triangulationSection}
 ${tacticBlocks}
 
 <h2>Detailed Question-Level Scoring</h2>
-<p style="font-size:10pt;color:#64748B;margin-top:0;">Each question scored 0 (none), 1 (low), 2 (medium), 3 (high). Type scores normalize to 0–10.</p>
+<p style="font-size:10pt;color:#64748B;margin-top:0;">Each question scored 0 (none), 1 (low), 2 (medium), 3 (high) by all three sources. Type scores normalize to 0–10; the ten type scores sum to the Total Innovation Score (0–100).</p>
 ${detailedSections}
 
-<h2>AI Analyst Responses</h2>
+<h2>AI Strength &amp; Gap Summaries</h2>
+<h3 style="color:${ai1ColorHex};">${escapeHTML(ai1Name)}</h3>
+<p style="font-size:10.5pt;color:#334155;">${escapeHTML(ai1Parsed.summary || "(no summary paragraph found)")}</p>
+<h3 style="color:${ai2ColorHex};">${escapeHTML(ai2Name)}</h3>
+<p style="font-size:10.5pt;color:#334155;">${escapeHTML(ai2Parsed.summary || "(no summary paragraph found)")}</p>
+
+<h2>Appendix · Raw AI Responses</h2>
 <h3>${escapeHTML(ai1Name)}</h3>
 <div class="ai-block">${escapeHTML(ai1Raw || "(none)")}</div>
 <h3>${escapeHTML(ai2Name)}</h3>
 <div class="ai-block">${escapeHTML(ai2Raw || "(none)")}</div>
 
-<p class="footer-note">Adapted from Keeley, Pikkel, Quinn &amp; Walters · Ten Types of Innovation · 2013</p>
+<p class="footer-note">Innovation Workshop ${APP_VERSION} · Adapted from Keeley, Pikkel, Quinn &amp; Walters · Ten Types of Innovation · 2013</p>
 
 </div>
 </body>
@@ -876,46 +1042,51 @@ ${detailedSections}
   };
 
   const buildPlainText = () => {
+    const f2 = (v) => typeof v === "number" ? v.toFixed(2) : "—";
+    const f1 = (v) => typeof v === "number" ? v.toFixed(1) : "—";
+    const n1 = (ai1Name || "AI 1").slice(0, 16), n2 = (ai2Name || "AI 2").slice(0, 16);
     const lines = [];
-    lines.push(`INNOVATION WORKSHOP — TEAM SUMMARY`);
+    lines.push(`INNOVATION WORKSHOP ${APP_VERSION} — TEAM SUMMARY`);
     lines.push(`Company: ${companyName || "(unnamed)"}`);
     if (companyContext.trim()) lines.push(`Scope: ${companyContext.trim()}`);
     if (teamName) lines.push(`Team: ${teamName}`);
+    lines.push(`AI models: ${ai1Name || "—"} · ${ai2Name || "—"}`);
     lines.push(`Generated: ${new Date().toLocaleString()}`);
     lines.push("");
-    lines.push(`SCORES (0-10)`);
-    lines.push(`Type                          Team    ${ai1Name.padEnd(8)} ${ai2Name.padEnd(8)}`);
-    lines.push(`-------------------------------------------------------------`);
+    lines.push(`TYPE SCORES (0-10, rolled up from ${NQ} questions scored 0-3 by every source)`);
+    lines.push(`${"Type".padEnd(24)}${"Team".padStart(8)}${n1.padStart(18)}${n2.padStart(18)}`);
+    lines.push("-".repeat(68));
     TYPES_ORDER.forEach(t => {
-      const team = teamTypeScores[t];
-      const teamStr = team.scored === team.total ? team.score.toFixed(2) : "—";
-      const a1 = typeof ai1Scores[t] === "number" ? ai1Scores[t].toFixed(2) : "—";
-      const a2 = typeof ai2Scores[t] === "number" ? ai2Scores[t].toFixed(2) : "—";
-      lines.push(`${t.padEnd(28)}  ${teamStr.padStart(5)}   ${a1.padStart(6)}   ${a2.padStart(6)}`);
+      lines.push(`${t.padEnd(24)}${f2(teamTypeFinal[t]).padStart(8)}${f2(ai1Scores[t]).padStart(18)}${f2(ai2Scores[t]).padStart(18)}`);
     });
-    lines.push("");
-    lines.push(`AVERAGES`);
-    if (teamAvg !== null) lines.push(`Team:   ${teamAvg.toFixed(2)}`);
-    if (ai1Avg !== null) lines.push(`${ai1Name}: ${ai1Avg.toFixed(2)}`);
-    if (ai2Avg !== null) lines.push(`${ai2Name}: ${ai2Avg.toFixed(2)}`);
+    lines.push("-".repeat(68));
+    lines.push(`${"TOTAL (0-100)".padEnd(24)}${f1(teamTotal).padStart(8)}${f1(ai1Total).padStart(18)}${f1(ai2Total).padStart(18)}`);
+    lines.push(`${`Strong types (>= ${STRONG_THRESHOLD})`.padEnd(24)}${String(countStrong(teamTypeFinal)).padStart(8)}${String(countStrong(ai1Scores)).padStart(18)}${String(countStrong(ai2Scores)).padStart(18)}`);
     lines.push("");
     lines.push(`TACTIC RECOMMENDATIONS`);
     if (!tacticRecs.length) lines.push("(none recorded)");
     tacticRecs.forEach((r, i) => {
-      lines.push(`\n${i+1}. ${r.type} — ${r.name}`);
-      lines.push(`   Justification: ${r.justification || "(none recorded)"}`);
+      lines.push(`\n${i+1}. ${r.name} (${r.type} · ${TYPE_INFO[r.type].category})`);
+      TACTIC_FIELDS.forEach(fd => lines.push(`   ${fd.label}: ${(r[fd.key] || "").trim() || "(not recorded)"}`));
     });
+    if (tacticRecs.length) lines.push(`\nProjected strong types if adopted (team scoring): ${countStrong(teamTypeFinal)} -> ${projectedStrong}`);
     lines.push("");
-    lines.push(`PER-QUESTION SCORES`);
+    lines.push(`PER-QUESTION SCORES (Team / ${n1} / ${n2})`);
     TYPES_ORDER.forEach(t => {
       lines.push(`\n${t}:`);
-      const qs = QUESTIONS.filter(q => q.type === t);
-      qs.forEach((q, i) => {
-        const v = questionScores[`${t}:${i}`];
-        lines.push(`  Q${i+1} [${typeof v === "number" ? v : "—"}/3]  ${q.text}`);
+      QUESTIONS.filter(q => q.type === t).forEach((q, i) => {
+        const key = `${t}:${i}`;
+        const v = (x) => typeof x === "number" ? x : "—";
+        lines.push(`  ${questionCode(t, i).padEnd(4)} [${v(questionScores[key])} / ${v(ai1Q[key])} / ${v(ai2Q[key])}]  ${q.text}`);
+        if (ai1Parsed.evidence[key]) lines.push(`        ${n1}: ${ai1Parsed.evidence[key]}`);
+        if (ai2Parsed.evidence[key]) lines.push(`        ${n2}: ${ai2Parsed.evidence[key]}`);
       });
-      if (typeEvidence[t]) lines.push(`  Evidence: ${typeEvidence[t]}`);
+      if (typeEvidence[t]) lines.push(`  Team evidence: ${typeEvidence[t]}`);
     });
+    lines.push("");
+    lines.push(`AI SUMMARIES`);
+    lines.push(`${ai1Name || "AI 1"}: ${ai1Parsed.summary || "(none)"}`);
+    lines.push(`${ai2Name || "AI 2"}: ${ai2Parsed.summary || "(none)"}`);
     return lines.join("\n");
   };
 
@@ -989,7 +1160,7 @@ ${detailedSections}
         body { font-feature-settings: "cv11", "ss01"; }
         .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace; letter-spacing: -0.01em; }
         .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: ${C.textDim}; font-weight: 500; }
-        .iw-input { background: ${C.surface2}; color: ${C.text}; border: 1px solid ${C.borderMid}; border-radius: 8px; padding: 0.65rem 0.85rem; font-family: inherit; font-size: 0.95rem; outline: none; transition: all 0.15s; width: 100%; }
+        .iw-input { box-sizing: border-box; background: ${C.surface2}; color: ${C.text}; border: 1px solid ${C.borderMid}; border-radius: 8px; padding: 0.65rem 0.85rem; font-family: inherit; font-size: 0.95rem; outline: none; transition: all 0.15s; width: 100%; }
         .iw-input:focus { border-color: ${C.accent}; box-shadow: 0 0 0 3px ${C.accentDim}; }
         .iw-input::placeholder { color: ${C.textMuted}; }
         textarea.iw-input { resize: vertical; line-height: 1.5; font-family: inherit; }
@@ -1034,7 +1205,7 @@ ${detailedSections}
                 Innovation Workshop
               </div>
               <div className="mono" style={{ fontSize: "10px", color: C.textDim, marginTop: "1px" }}>
-                Doblin Ten Types · 45 min
+                Doblin Ten Types · 45 min · {APP_VERSION}
               </div>
             </div>
           </div>
@@ -1122,6 +1293,7 @@ ${detailedSections}
             typeEvidence={typeEvidence} setTypeEvidence={setTypeEvidence}
             teamTypeScores={teamTypeScores}
             teamComplete={teamComplete}
+            teamTotal={teamTotal}
             onContinue={() => setPhase(2)}
             onBack={() => setPhase(0)}
           />}
@@ -1131,7 +1303,8 @@ ${detailedSections}
             companyName={companyName} companyContext={companyContext}
             aiName={ai1Name} setAiName={setAi1Name}
             aiRaw={ai1Raw} setAiRaw={setAi1Raw}
-            aiScores={ai1Scores} setAiScores={setAi1Scores}
+            aiParsed={ai1Parsed} aiQ={ai1Q} aiEdits={ai1Edits} setAiEdits={setAi1Edits}
+            aiScores={ai1Scores} aiTotal={ai1Total}
             aiComplete={ai1Complete}
             copied={copied1} setCopied={setCopied1}
             onContinue={() => setPhase(3)}
@@ -1144,7 +1317,8 @@ ${detailedSections}
             companyName={companyName} companyContext={companyContext}
             aiName={ai2Name} setAiName={setAi2Name}
             aiRaw={ai2Raw} setAiRaw={setAi2Raw}
-            aiScores={ai2Scores} setAiScores={setAi2Scores}
+            aiParsed={ai2Parsed} aiQ={ai2Q} aiEdits={ai2Edits} setAiEdits={setAi2Edits}
+            aiScores={ai2Scores} aiTotal={ai2Total}
             aiComplete={ai2Complete}
             copied={copied2} setCopied={setCopied2}
             onContinue={() => setPhase(4)}
@@ -1156,6 +1330,9 @@ ${detailedSections}
             companyName={companyName}
             triangulation={triangulation}
             teamAvg={teamAvg} ai1Avg={ai1Avg} ai2Avg={ai2Avg}
+            teamTotal={teamTotal} ai1Total={ai1Total} ai2Total={ai2Total}
+            teamTypeFinal={teamTypeFinal} ai1Scores={ai1Scores} ai2Scores={ai2Scores}
+            questionGaps={questionGaps}
             ai1Name={ai1Name} ai2Name={ai2Name}
             typeEvidence={typeEvidence}
             onContinue={() => setPhase(5)}
@@ -1163,16 +1340,19 @@ ${detailedSections}
           />}
           {phase === 5 && <PhaseTactics
             companyName={companyName}
-            teamTypeScores={teamTypeScores}
+            teamTypeFinal={teamTypeFinal} ai1Scores={ai1Scores} ai2Scores={ai2Scores}
+            ai1Name={ai1Name} ai2Name={ai2Name}
+            projectedStrong={projectedStrong}
             tacticRecs={tacticRecs} setTacticRecs={setTacticRecs}
             onContinue={() => setPhase(6)}
             onBack={() => setPhase(4)}
           />}
           {phase === 6 && <PhaseTakeaway
             companyName={companyName} teamName={teamName}
-            teamAvg={teamAvg} ai1Avg={ai1Avg} ai2Avg={ai2Avg}
+            teamTotal={teamTotal} ai1Total={ai1Total} ai2Total={ai2Total}
+            teamTypeFinal={teamTypeFinal} ai1Scores={ai1Scores} ai2Scores={ai2Scores}
+            projectedStrong={projectedStrong}
             ai1Name={ai1Name} ai2Name={ai2Name}
-            triangulation={triangulation}
             tacticRecs={tacticRecs}
             downloadSummary={downloadSummary}
             onBack={() => setPhase(5)}
@@ -1346,17 +1526,17 @@ function PhaseSetup({ companyName, setCompanyName, companyContext, setCompanyCon
             <span className="label" style={{ color: C.accentBright }}>Five-Type Threshold</span>
           </div>
           <p style={{ fontSize: "0.88rem", lineHeight: 1.55, margin: 0, color: C.text }}>
-            Keeley's research: companies innovating on <strong>5+ types simultaneously</strong> dramatically outperform single-type innovators. The framework's value is showing where a company isn't innovating.
+            Keeley's research: companies innovating on <strong>5+ types simultaneously</strong> dramatically outperform single-type innovators. In this workshop a type counts as <strong>strong at {STRONG_THRESHOLD.toFixed(1)}/10 or higher</strong> — consistently Medium-to-High answers on its questions. The framework's value is showing where a company isn't innovating.
           </p>
         </div>
 
         <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: `1px solid ${C.border}` }}>
           <div className="label" style={{ marginBottom: "0.6rem" }}>Workshop · 45 min</div>
           <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.85rem", lineHeight: 1.7, color: C.textDim }}>
-            <li>Score across 43 canonical questions</li>
-            <li>Get assessments from <strong style={{ color: C.text }}>two</strong> AI models</li>
-            <li>Triangulate three perspectives</li>
-            <li>Pick 2–3 tactics from a library of 112</li>
+            <li>Score across {NQ} canonical questions → a <strong style={{ color: C.text }}>Total Innovation Score</strong> out of 100</li>
+            <li>Have <strong style={{ color: C.text }}>two</strong> AI models answer the same {NQ} questions</li>
+            <li>Triangulate three perspectives, type by type and question by question</li>
+            <li>Pick 2–3 tactics from a library of {TACTICS.length}</li>
           </ul>
         </div>
       </Card>
@@ -1378,26 +1558,30 @@ function CategoryChip({ color, name, desc }) {
 // PHASE II — DEEP SCORING
 // ============================================================
 
-function PhaseDeepScore({ companyName, questionScores, setQuestionScores, typeEvidence, setTypeEvidence, teamTypeScores, teamComplete, onContinue, onBack }) {
+function PhaseDeepScore({ companyName, questionScores, setQuestionScores, typeEvidence, setTypeEvidence, teamTypeScores, teamComplete, teamTotal, onContinue, onBack }) {
   const completeTypes = TYPES_ORDER.filter(t => teamTypeScores[t].scored === teamTypeScores[t].total).length;
   const totalAnswered = Object.values(questionScores).filter(v => typeof v === "number").length;
+  const runningTotal = TYPES_ORDER.reduce((a, t) => a + teamTypeScores[t].score, 0);
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "1.25rem", flexWrap: "wrap", gap: "1rem" }}>
-        <PhaseHeader num="02" title="Deep Scoring" subtitle={`Scoring ${companyName} on the 43 canonical Doblin questions`} />
+        <PhaseHeader num="02" title="Deep Scoring" subtitle={`Scoring ${companyName} on the ${NQ} canonical Doblin questions`} />
         <div style={{ display: "flex", gap: "0.75rem" }}>
           <ProgressPill label="Types" value={completeTypes} total={10} />
-          <ProgressPill label="Questions" value={totalAnswered} total={43} accent />
+          <ProgressPill label="Questions" value={totalAnswered} total={NQ} accent />
+          <TotalPill value={teamTotal ?? runningTotal} provisional={teamTotal == null} />
         </div>
       </div>
 
       <div style={{ padding: "0.85rem 1.1rem", marginBottom: "1.5rem", backgroundColor: C.accentDim, border: `1px solid ${C.accent}30`, borderRadius: "10px", display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
         <Zap size={16} color={C.accentBright} style={{ flexShrink: 0, marginTop: "2px" }} />
         <p style={{ margin: 0, fontSize: "0.9rem", lineHeight: 1.55, color: C.text }}>
-          Score each question <span className="mono" style={{ color: C.accentBright }}>0</span> (none) → <span className="mono" style={{ color: C.accentBright }}>3</span> (high). Move quickly — <strong>~25 sec per question</strong>. Type scores normalize to 0–10 as you go. Optional: capture one line of evidence per type.
+          Score each question <span className="mono" style={{ color: C.accentBright }}>0</span> → <span className="mono" style={{ color: C.accentBright }}>3</span> <strong>relative to direct competitors and industry norms</strong>. Move quickly — <strong>~25 sec per question</strong>. Type scores normalize to 0–10 and sum to a Total out of 100. Both AIs will answer these same questions on this same scale, so your scores can be compared question by question.
         </p>
       </div>
+
+      <RubricStrip />
 
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         {TYPES_ORDER.map((typeName, idx) => (
@@ -1417,7 +1601,7 @@ function PhaseDeepScore({ companyName, questionScores, setQuestionScores, typeEv
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2rem" }}>
         <SecondaryButton onClick={onBack}><ChevronLeft size={15} /> Back</SecondaryButton>
         <PrimaryButton onClick={onContinue} disabled={!teamComplete}>
-          {teamComplete ? "Continue to first AI" : `Score all 43 (${totalAnswered}/43)`} <ChevronRight size={15} />
+          {teamComplete ? "Continue to first AI" : `Score all ${NQ} (${totalAnswered}/${NQ})`} <ChevronRight size={15} />
         </PrimaryButton>
       </div>
     </div>
@@ -1573,24 +1757,34 @@ function QuestionRow({ number, question, value, onChange, color }) {
 // PHASE III & IV — AI
 // ============================================================
 
-function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, aiName, setAiName, aiRaw, setAiRaw, aiScores, setAiScores, aiComplete, copied, setCopied, onContinue, onBack, continueLabel, otherAiName }) {
+const REFORMAT_PROMPT = "Please reformat your answer as exactly one line per question, all 44 in order, in this format: CODE: SCORE | one-sentence evidence (for example, PM1: 2 | ...). Use the codes PM1–PM7, NW1–NW4, ST1–ST4, PR1–PR4, PP1–PP4, PS1–PS4, SV1–SV4, CH1–CH4, BR1–BR5, CE1–CE4. No table. Then add your strength-and-gap paragraph.";
+
+function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, aiName, setAiName, aiRaw, setAiRaw, aiParsed, aiQ, aiEdits, setAiEdits, aiScores, aiTotal, aiComplete, copied, setCopied, onContinue, onBack, continueLabel, otherAiName }) {
   const prompt = useMemo(() => buildAIPrompt(companyName, companyContext), [companyName, companyContext]);
+  const [openTypes, setOpenTypes] = useState({});
+  const [fixCopied, setFixCopied] = useState(false);
 
-  const handleManualScore = (typeName, val) => {
-    const num = val === "" ? null : parseFloat(val);
-    if (num !== null && (isNaN(num) || num < 0 || num > 10)) return;
-    setAiScores(prev => ({ ...prev, [typeName]: num }));
-  };
-
-  const enteredCount = TYPES_ORDER.filter(t => typeof aiScores[t] === "number").length;
+  const answeredCount = QUESTIONS.reduce((n, q, gi) => {
+    const i = QUESTIONS.slice(0, gi).filter(x => x.type === q.type).length;
+    return n + (typeof aiQ[`${q.type}:${i}`] === "number" ? 1 : 0);
+  }, 0);
+  const parsedCount = Object.keys(aiParsed.scores).length;
+  const editCount = Object.keys(aiEdits).length;
   const trimmedName = aiName.trim();
   const canProceed = aiComplete && trimmedName.length > 0;
+  const sameAsOther = otherAiName && trimmedName && trimmedName.toLowerCase() === otherAiName.trim().toLowerCase();
 
-  const copyPrompt = async () => {
+  const setQ = (key, val) => setAiEdits(prev => {
+    const next = { ...prev };
+    if (aiParsed.scores[key] === val) delete next[key]; else next[key] = val;
+    return next;
+  });
+
+  const copyText = async (text, setter) => {
     try {
-      await navigator.clipboard.writeText(prompt);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
+      await navigator.clipboard.writeText(text);
+      setter(true);
+      setTimeout(() => setter(false), 1800);
     } catch (e) {}
   };
 
@@ -1601,7 +1795,7 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
         title={phaseTitle}
         subtitle={otherAiName
           ? `For triangulation, get a different model's perspective. Use something other than ${otherAiName || "the first AI"}.`
-          : "An independent assessment from an AI analyst."}
+          : `An independent assessment: the AI answers the same ${NQ} questions your team just scored.`}
       />
 
       <div style={{ display: "flex", alignItems: "center", gap: "0.85rem", margin: "1.25rem 0 1.5rem", flexWrap: "wrap" }}>
@@ -1614,13 +1808,16 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
           className="iw-input"
           style={{ maxWidth: "480px", flex: 1, minWidth: "240px" }}
         />
+        {sameAsOther && (
+          <span style={{ fontSize: "0.8rem", color: C.warning }}>Same model as Phase 03 — the contrast is the point. Use a different one.</span>
+        )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "1.5rem" }}>
         <Card>
           <StepLabel num={`${stepNum}A`} title={trimmedName ? `Send this prompt to ${trimmedName}` : "Send this prompt to your AI"} />
           <p style={{ fontSize: "0.9rem", lineHeight: 1.55, color: C.textDim, margin: "0 0 1rem" }}>
-            Open your model's chat interface in a new tab and paste the prompt below.
+            Open your model's chat interface in a new tab and paste the prompt. It contains all {NQ} questions and the same 0–3 rubric your team used. The reply takes 30–90 seconds.
           </p>
 
           <div style={{ position: "relative" }}>
@@ -1628,10 +1825,10 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
               backgroundColor: C.bg,
               color: C.text,
               padding: "1rem 1.1rem",
-              fontSize: "0.78rem",
-              lineHeight: 1.6,
+              fontSize: "0.74rem",
+              lineHeight: 1.55,
               overflow: "auto",
-              maxHeight: "320px",
+              maxHeight: "420px",
               whiteSpace: "pre-wrap",
               margin: 0,
               border: `1px solid ${C.border}`,
@@ -1640,7 +1837,7 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
               {prompt}
             </pre>
             <button
-              onClick={copyPrompt}
+              onClick={() => copyText(prompt, setCopied)}
               className="mono"
               style={{
                 position: "absolute", top: "0.6rem", right: "0.6rem",
@@ -1659,49 +1856,103 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
 
           <div style={{ marginTop: "0.85rem", padding: "0.7rem 0.85rem", backgroundColor: `${C.success}10`, border: `1px solid ${C.success}30`, borderRadius: "8px", fontSize: "0.8rem", color: C.text, display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
             <Zap size={13} color={C.success} style={{ flexShrink: 0, marginTop: "2px" }} />
-            <span><strong style={{ color: C.success }}>Tip:</strong> Enable web search if your model supports it — without current data, the AI may score using year-old training data.</span>
+            <span><strong style={{ color: C.success }}>Tip:</strong> Turn on web search if your model has it. Without it, the AI scores from training data that may be a year or more old.</span>
           </div>
         </Card>
 
         <Card>
           <StepLabel num={`${stepNum}B`} title={trimmedName ? `Paste ${trimmedName}'s response` : "Paste the AI's response"} />
           <p style={{ fontSize: "0.9rem", lineHeight: 1.55, color: C.textDim, margin: "0 0 1rem" }}>
-            Paste the full reply. Scores are auto-extracted; verify or fix any that didn't parse.
+            Paste the full reply. Each question's score is read automatically and rolled up into type scores with the same weights as yours. Fix or fill any question below.
           </p>
 
           <textarea
             value={aiRaw}
             onChange={(e) => setAiRaw(e.target.value)}
             placeholder={trimmedName ? `Paste ${trimmedName}'s full response here...` : "Paste the AI's full response here..."}
-            rows={10}
+            rows={8}
             className="iw-input"
-            style={{ fontSize: "0.88rem", minHeight: "200px", fontFamily: 'inherit' }}
+            style={{ fontSize: "0.85rem", minHeight: "160px", fontFamily: "inherit" }}
           />
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem", marginBottom: "0.5rem" }}>
-            <span className="label">Extracted Scores</span>
-            <span className="mono" style={{ fontSize: "11px", color: enteredCount === 10 ? C.success : C.textDim }}>{enteredCount}/10</span>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem 0.85rem", padding: "0.85rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px" }}>
-            {TYPES_ORDER.map(t => (
-              <div key={t} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.82rem" }}>
-                <span style={{ color: C.text }}>{t}</span>
-                <input
-                  type="number" min={0} max={10} step={0.1}
-                  value={aiScores[t] ?? ""}
-                  onChange={(e) => handleManualScore(t, e.target.value)}
-                  className="mono"
-                  style={{
-                    width: "55px", padding: "0.2rem 0.45rem",
-                    fontSize: "0.82rem", textAlign: "right",
-                    border: `1px solid ${C.borderMid}`, borderRadius: "5px",
-                    backgroundColor: C.bg, color: C.text,
-                    outline: "none", fontVariantNumeric: "tabular-nums",
-                  }}
-                />
+          {aiRaw.trim().length > 40 && parsedCount < NQ - 12 && (
+            <div style={{ marginTop: "0.75rem", padding: "0.7rem 0.85rem", backgroundColor: `${C.warning}12`, border: `1px solid ${C.warning}40`, borderRadius: "8px", fontSize: "0.8rem", color: C.text }}>
+              <strong style={{ color: C.warning }}>Only {parsedCount} of {NQ} questions found.</strong> The model may have used a table or skipped questions. Send it this follow-up, then paste the new reply:
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.5rem" }}>
+                <code className="mono" style={{ flex: 1, fontSize: "0.7rem", color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{REFORMAT_PROMPT}</code>
+                <button onClick={() => copyText(REFORMAT_PROMPT, setFixCopied)} className="mono" style={{ padding: "0.3rem 0.6rem", backgroundColor: fixCopied ? C.success : C.warning, color: "#111", border: "none", borderRadius: "5px", fontSize: "10px", fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>
+                  {fixCopied ? "Copied" : "Copy follow-up"}
+                </button>
               </div>
-            ))}
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem", marginBottom: "0.5rem", gap: "0.5rem", flexWrap: "wrap" }}>
+            <span className="label">Questions <span className="mono" style={{ color: answeredCount === NQ ? C.success : C.textDim, marginLeft: "0.35rem" }}>{answeredCount}/{NQ}</span>
+              {editCount > 0 && <span style={{ color: C.warning, marginLeft: "0.5rem" }}>· {editCount} fixed by hand</span>}
+            </span>
+            <TotalPill value={aiTotal} provisional={false} label="AI total" />
           </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", padding: "0.6rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", maxHeight: "520px", overflowY: "auto" }}>
+            {TYPES_ORDER.map(t => {
+              const qs = QUESTIONS.filter(q => q.type === t);
+              const got = qs.filter((_, i) => typeof aiQ[`${t}:${i}`] === "number").length;
+              const missing = got < qs.length;
+              const isOpen = openTypes[t] ?? (missing && aiRaw.trim().length > 0);
+              const catColor = CATEGORY_COLORS[TYPE_INFO[t].category];
+              return (
+                <div key={t} style={{ backgroundColor: C.surface, border: `1px solid ${missing && aiRaw.trim() ? `${C.warning}40` : C.border}`, borderRadius: "8px" }}>
+                  <button
+                    onClick={() => setOpenTypes(prev => ({ ...prev, [t]: !isOpen }))}
+                    style={{ width: "100%", display: "grid", gridTemplateColumns: "8px 1fr auto auto 16px", gap: "0.6rem", alignItems: "center", padding: "0.45rem 0.65rem", background: "none", border: "none", cursor: "pointer", color: C.text, textAlign: "left" }}
+                  >
+                    <span style={{ width: "8px", height: "8px", borderRadius: "999px", backgroundColor: catColor }} />
+                    <span style={{ fontSize: "0.84rem" }}>{t}</span>
+                    <span className="mono" style={{ fontSize: "10px", color: missing ? C.warning : C.textMuted }}>{got}/{qs.length}</span>
+                    <span className="mono" style={{ fontSize: "13px", fontWeight: 700, color: typeof aiScores[t] === "number" ? catColor : C.textMuted, minWidth: "38px", textAlign: "right" }}>
+                      {typeof aiScores[t] === "number" ? aiScores[t].toFixed(1) : "—"}
+                    </span>
+                    {isOpen ? <ChevronUp size={14} color={C.textDim} /> : <ChevronDown size={14} color={C.textDim} />}
+                  </button>
+                  {isOpen && (
+                    <div style={{ padding: "0 0.65rem 0.6rem", display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+                      {qs.map((q, i) => {
+                        const key = `${t}:${i}`;
+                        const v = aiQ[key];
+                        const edited = key in aiEdits;
+                        const ev = aiParsed.evidence[key];
+                        return (
+                          <div key={key} style={{ display: "grid", gridTemplateColumns: "34px 1fr auto", gap: "0.5rem", alignItems: "start", padding: "0.35rem 0.4rem", borderTop: `1px solid ${C.border}` }}>
+                            <span className="mono" style={{ fontSize: "10px", color: edited ? C.warning : C.textMuted, fontWeight: 600, paddingTop: "2px" }}>{questionCode(t, i)}</span>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: "0.76rem", lineHeight: 1.35, color: C.text }}>{q.text}</div>
+                              {ev && <div style={{ fontSize: "0.72rem", lineHeight: 1.35, color: C.textDim, fontStyle: "italic", marginTop: "0.15rem" }}>{ev}</div>}
+                            </div>
+                            <div style={{ display: "flex", gap: "0.15rem" }}>
+                              {[0, 1, 2, 3].map(n => (
+                                <button key={n} onClick={() => setQ(key, n)} className="seg-btn mono" style={{
+                                  width: "24px", padding: "0.2rem 0", fontSize: "11px", fontWeight: 700, cursor: "pointer",
+                                  border: `1px solid ${v === n ? catColor : C.border}`,
+                                  backgroundColor: v === n ? `${catColor}25` : C.surface2,
+                                  color: v === n ? catColor : C.textDim, borderRadius: "4px",
+                                }}>{n}</button>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {editCount > 0 && (
+            <button onClick={() => setAiEdits({})} className="mono" style={{ marginTop: "0.5rem", background: "none", border: "none", color: C.textDim, fontSize: "10px", cursor: "pointer", textDecoration: "underline" }}>
+              Clear hand fixes ({editCount})
+            </button>
+          )}
         </Card>
       </div>
 
@@ -1712,7 +1963,7 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
             ? "Enter the model name"
             : aiComplete
               ? continueLabel
-              : `Enter all 10 (${enteredCount}/10)`} <ChevronRight size={15} />
+              : `All ${NQ} questions needed (${answeredCount}/${NQ})`} <ChevronRight size={15} />
         </PrimaryButton>
       </div>
     </div>
@@ -1723,7 +1974,12 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
 // PHASE V — TRIANGULATION
 // ============================================================
 
-function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Avg, ai1Name, ai2Name, typeEvidence, onContinue, onBack }) {
+function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Avg, teamTotal, ai1Total, ai2Total, teamTypeFinal, ai1Scores, ai2Scores, questionGaps, ai1Name, ai2Name, typeEvidence, onContinue, onBack }) {
+  const [qView, setQView] = useState("team");
+  const qTeam = [...questionGaps].filter(g => Math.abs(g.teamVsAI) >= 1.5).sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI));
+  const qAI = [...questionGaps].filter(g => g.aiSpread >= 2).sort((a, b) => b.aiSpread - a.aiSpread);
+  const qAgree = questionGaps.filter(g => g.team === g.ai1 && g.ai1 === g.ai2).length;
+  const qList = (qView === "team" ? qTeam : qAI).slice(0, 8);
   const chartData = triangulation.map(item => ({
     name: item.type,
     shortName: item.type.replace("Customer Engagement", "Cust. Eng.").replace("Product Performance", "Prod. Perf.").replace("Product System", "Prod. Sys."),
@@ -1741,9 +1997,9 @@ function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Av
       <PhaseHeader num="05" title="Triangulation" subtitle={`Where do you, ${ai1Name}, and ${ai2Name} agree about ${companyName}? Where does each see something the others miss?`} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.85rem", margin: "1.5rem 0" }}>
-        <AvgTile label="Team avg" value={teamAvg} color={C.experience} />
-        <AvgTile label={`${ai1Name} avg`} value={ai1Avg} color={C.offering} />
-        <AvgTile label={`${ai2Name} avg`} value={ai2Avg} color={C.config} />
+        <AvgTile label="Team" total={teamTotal} value={teamAvg} strong={countStrong(teamTypeFinal)} color={C.experience} />
+        <AvgTile label={ai1Name} total={ai1Total} value={ai1Avg} strong={countStrong(ai1Scores)} color={C.offering} />
+        <AvgTile label={ai2Name} total={ai2Total} value={ai2Avg} strong={countStrong(ai2Scores)} color={C.config} />
       </div>
 
       <Card style={{ marginBottom: "1.5rem" }}>
@@ -1804,6 +2060,49 @@ function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Av
         </PatternBox>
       </div>
 
+      <Card style={{ marginTop: "1.5rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem", flexWrap: "wrap", marginBottom: "0.4rem" }}>
+          <div>
+            <span className="label">Question-level drill-down</span>
+            <div style={{ fontSize: "0.85rem", color: C.textDim, marginTop: "0.25rem" }}>
+              All three of you answered the same {NQ} questions. All three gave the identical score on <strong style={{ color: C.text }}>{qAgree}</strong> of {questionGaps.length}. Here is where the type-level gaps actually come from.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "0.3rem" }}>
+            {[["team", `Team vs. AIs (${qTeam.length})`, C.experience], ["ai", `AIs disagree (${qAI.length})`, C.config]].map(([k, lbl, col]) => (
+              <button key={k} onClick={() => setQView(k)} className="mono" style={{
+                padding: "0.35rem 0.7rem", fontSize: "10px", fontWeight: 600, letterSpacing: "0.04em", cursor: "pointer", borderRadius: "999px",
+                border: `1px solid ${qView === k ? col : C.border}`, backgroundColor: qView === k ? `${col}20` : "transparent", color: qView === k ? col : C.textDim,
+              }}>{lbl}</button>
+            ))}
+          </div>
+        </div>
+        <div style={{ fontSize: "0.75rem", color: C.textMuted, marginBottom: "0.75rem" }}>
+          {qView === "team" ? "Questions where the team's 0–3 answer is at least 1.5 points from the average of the two AIs." : "Questions where the two AIs are at least 2 points apart."}
+        </div>
+        {qList.length === 0 && <EmptyHint text="No questions meet this threshold." />}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          {qList.map(g => {
+            const catColor = CATEGORY_COLORS[TYPE_INFO[g.type].category];
+            return (
+              <div key={g.key} style={{ display: "grid", gridTemplateColumns: "44px minmax(0,1fr) auto", gap: "0.75rem", padding: "0.6rem 0.75rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderLeft: `3px solid ${catColor}`, borderRadius: "8px" }}>
+                <span className="mono" style={{ fontSize: "11px", fontWeight: 700, color: catColor }}>{g.code}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: "0.86rem", color: C.text, lineHeight: 1.4 }}>{g.text}</div>
+                  {g.ev1 && <div style={{ fontSize: "0.76rem", color: C.textDim, marginTop: "0.25rem", lineHeight: 1.4 }}><span className="mono" style={{ color: C.offering, fontWeight: 600 }}>{ai1Name}:</span> {g.ev1}</div>}
+                  {g.ev2 && <div style={{ fontSize: "0.76rem", color: C.textDim, marginTop: "0.15rem", lineHeight: 1.4 }}><span className="mono" style={{ color: C.config, fontWeight: 600 }}>{ai2Name}:</span> {g.ev2}</div>}
+                </div>
+                <div className="mono" style={{ display: "flex", gap: "0.5rem", fontSize: "11px", color: C.textDim, alignItems: "flex-start", whiteSpace: "nowrap" }}>
+                  <span>T <strong style={{ color: C.experience, fontSize: "14px" }}>{g.team}</strong></span>
+                  <span>A1 <strong style={{ color: C.offering, fontSize: "14px" }}>{g.ai1}</strong></span>
+                  <span>A2 <strong style={{ color: C.config, fontSize: "14px" }}>{g.ai2}</strong></span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
       <Card style={{ marginTop: "1.5rem", borderColor: `${C.config}40`, backgroundColor: `${C.config}08` }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
           <Sparkles size={14} color={C.config} />
@@ -1813,6 +2112,7 @@ function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Av
           <li><strong>Where AIs agree but disagree with you:</strong> Two independent models pattern-matching on similar evidence. What might they be picking up that the team missed?</li>
           <li><strong>Where AIs disagree with each other:</strong> The framework is genuinely ambiguous on this type for this company — or the models drew on different recent information. Which is it?</li>
           <li><strong>Where all three converge:</strong> Real signal, or just the conventional wisdom about this company that everyone has internalized?</li>
+          <li><strong>Read the evidence, not just the number:</strong> Pick one question from the drill-down. Is the AI's one-line evidence accurate, current, and about the right scope? Would it change your answer?</li>
         </ol>
       </Card>
 
@@ -1824,7 +2124,7 @@ function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Av
   );
 }
 
-function AvgTile({ label, value, color }) {
+function AvgTile({ label, total, value, strong, color }) {
   return (
     <div style={{
       backgroundColor: C.surface,
@@ -1833,12 +2133,15 @@ function AvgTile({ label, value, color }) {
       borderRadius: "10px",
       padding: "0.85rem 1.1rem",
     }}>
-      <div className="label" style={{ marginBottom: "0.3rem" }}>{label}</div>
+      <div className="label" style={{ marginBottom: "0.3rem" }}>{label} · Total Innovation Score</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: "0.35rem" }}>
         <span className="mono" style={{ fontSize: "1.85rem", fontWeight: 600, color, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>
-          {value !== null ? value.toFixed(2) : "—"}
+          {typeof total === "number" ? total.toFixed(1) : "—"}
         </span>
-        <span className="mono" style={{ fontSize: "11px", color: C.textMuted }}>/10</span>
+        <span className="mono" style={{ fontSize: "11px", color: C.textMuted }}>/100</span>
+      </div>
+      <div className="mono" style={{ fontSize: "10px", color: C.textDim, marginTop: "0.45rem" }}>
+        avg {value !== null && value !== undefined ? value.toFixed(2) : "—"}/10 · strong types (≥{STRONG_THRESHOLD}) <strong style={{ color }}>{strong}</strong>
       </div>
     </div>
   );
@@ -1902,178 +2205,207 @@ function EmptyHint({ text }) {
 
 const MAX_TACTICS = 3;
 
-function PhaseTactics({ companyName, teamTypeScores, tacticRecs, setTacticRecs, onContinue, onBack }) {
-  const initialOpen = useMemo(() => {
-    const sorted = [...TYPES_ORDER].sort((a, b) => teamTypeScores[a].score - teamTypeScores[b].score);
-    return sorted.length ? sorted[0] : null;
-  }, [teamTypeScores]);
+function PhaseTactics({ companyName, teamTypeFinal, ai1Scores, ai2Scores, ai1Name, ai2Name, projectedStrong, tacticRecs, setTacticRecs, onContinue, onBack }) {
+  // Three-source mean per type drives the ordering (falls back to whatever sources exist)
+  const typeStats = useMemo(() => {
+    const out = {};
+    TYPES_ORDER.forEach(t => {
+      const vals = [teamTypeFinal[t], ai1Scores[t], ai2Scores[t]].filter(v => typeof v === "number");
+      out[t] = { team: teamTypeFinal[t], ai1: ai1Scores[t], ai2: ai2Scores[t], mean: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0 };
+    });
+    return out;
+  }, [teamTypeFinal, ai1Scores, ai2Scores]);
+  const sortedTypes = useMemo(() => [...TYPES_ORDER].sort((a, b) => typeStats[a].mean - typeStats[b].mean), [typeStats]);
 
-  const [openType, setOpenType] = useState(initialOpen);
-  const justificationRefs = useRef({});
+  const [openType, setOpenType] = useState(sortedTypes[0] || null);
+  const fieldRefs = useRef({});
+
+  const isSelected = (type, name) => tacticRecs.some(r => r.type === type && r.name === name);
+  const addTactic = (type, name) => {
+    if (tacticRecs.length >= MAX_TACTICS || isSelected(type, name)) return;
+    setTacticRecs(prev => [...prev, normalizeTactic({ type, name })]);
+  };
+  const removeTactic = (type, name) => setTacticRecs(prev => prev.filter(r => !(r.type === type && r.name === name)));
+  const updateField = (type, name, field, val) => setTacticRecs(prev => prev.map(r =>
+    (r.type === type && r.name === name) ? { ...r, [field]: val } : r
+  ));
+
+  const canContinue = tacticRecs.length >= 2 && tacticRecs.every(tacticComplete);
+  const strongNow = countStrong(teamTypeFinal);
+  const coveredCats = new Set(tacticRecs.map(r => TYPE_INFO[r.type].category));
+  const singleCategory = tacticRecs.length >= 2 && coveredCats.size === 1;
+  const isStrongType = (t) => typeof typeStats[t].team === "number" && typeStats[t].team >= STRONG_THRESHOLD;
 
   const handleContinue = () => {
-    if (canContinue) {
-      onContinue();
-      return;
-    }
-    // Justifications missing — scroll to first empty one and focus it
-    const firstEmpty = tacticRecs.find(r => !r.justification.trim());
-    if (firstEmpty) {
-      const key = `${firstEmpty.type}:${firstEmpty.name}`;
-      const el = justificationRefs.current[key];
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        setTimeout(() => el.focus(), 250);
+    if (canContinue) { onContinue(); return; }
+    for (const r of tacticRecs) {
+      const f = TACTIC_FIELDS.find(fd => !(r[fd.key] || "").trim());
+      if (f) {
+        const el = fieldRefs.current[`${r.type}:${r.name}:${f.key}`];
+        if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); setTimeout(() => el.focus(), 250); }
+        return;
       }
     }
   };
 
-  const isSelected = (type, name) => tacticRecs.some(r => r.type === type && r.name === name);
-
-  const addTactic = (type, name) => {
-    if (tacticRecs.length >= MAX_TACTICS) return;
-    if (isSelected(type, name)) return;
-    setTacticRecs(prev => [...prev, { type, name, justification: "" }]);
-  };
-
-  const removeTactic = (type, name) => {
-    setTacticRecs(prev => prev.filter(r => !(r.type === type && r.name === name)));
-  };
-
-  const updateJustification = (type, name, val) => {
-    setTacticRecs(prev => prev.map(r =>
-      (r.type === type && r.name === name) ? { ...r, justification: val } : r
-    ));
-  };
-
-  const canContinue = tacticRecs.length >= 2 && tacticRecs.every(r => r.justification.trim().length > 0);
+  const fmtS = (v) => typeof v === "number" ? v.toFixed(1) : "—";
 
   return (
     <div>
-      <PhaseHeader num="06" title="Tactic Recommendations" subtitle={`Doblin's library of 112 tactics — pick 2-3 ${companyName} should adopt next, and justify why.`} />
+      <PhaseHeader num="06" title="Tactic Recommendations" subtitle={`Doblin's library of ${TACTICS.length} tactics — pick 2–3 ${companyName} should adopt next, and make the case for each.`} />
 
       <div style={{ marginTop: "1.25rem", marginBottom: "1.5rem", padding: "0.85rem 1.1rem", backgroundColor: C.accentDim, border: `1px solid ${C.accent}30`, borderRadius: "10px", display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
         <Layers size={16} color={C.accentBright} style={{ flexShrink: 0, marginTop: "2px" }} />
         <p style={{ margin: 0, fontSize: "0.9rem", lineHeight: 1.55, color: C.text }}>
-          Tactics are concrete moves to innovate on a given type. Types are sorted with your team's <strong style={{ color: C.accentBright }}>lowest scores first</strong> — these are your opportunities. Click <span className="mono" style={{ color: C.accentBright }}>+</span> to recommend, then justify each pick on the right.
+          Types are sorted by the <strong style={{ color: C.accentBright }}>average of all three sources, lowest first</strong> — these are the likeliest opportunities. Keeley's research says breakthroughs come from <strong>combining</strong> types, so aim for tactics in more than one category. Each pick needs three short answers: the gap, the evidence, and what adoption would take.
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "1.5rem", alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.4fr) minmax(0, 1fr)", gap: "1.5rem", alignItems: "start" }}>
         {/* LEFT: tactic browser */}
         <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-          {[...TYPES_ORDER]
-            .sort((a, b) => teamTypeScores[a].score - teamTypeScores[b].score)
-            .map(typeName => {
-              const info = TYPE_INFO[typeName];
-              const catColor = CATEGORY_COLORS[info.category];
-              const tactics = TACTICS.filter(t => t.type === typeName);
-              const score = teamTypeScores[typeName];
-              const isOpen = openType === typeName;
-              const opportunity = score.score < 5;
-              return (
-                <div key={typeName} style={{
-                  backgroundColor: C.surface,
-                  border: `1px solid ${isOpen ? `${catColor}50` : C.border}`,
-                  borderRadius: "10px",
-                  overflow: "hidden",
-                  transition: "all 0.15s",
-                }}>
-                  <button
-                    onClick={() => setOpenType(isOpen ? null : typeName)}
-                    style={{
-                      width: "100%", display: "grid",
-                      gridTemplateColumns: "auto 1fr auto auto",
-                      alignItems: "center", gap: "0.85rem",
-                      padding: "0.75rem 1rem",
-                      backgroundColor: "transparent", border: "none",
-                      cursor: "pointer", textAlign: "left",
-                      color: C.text,
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                      <div style={{ width: "8px", height: "8px", borderRadius: "999px", backgroundColor: catColor, boxShadow: `0 0 6px ${catColor}80` }} />
-                      <span className="mono" style={{ fontSize: "9px", color: catColor, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{info.category}</span>
-                    </div>
-                    <h4 style={{ fontSize: "1rem", fontWeight: 600, margin: 0, color: C.text, display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                      {typeName}
-                      {opportunity && (
-                        <span style={{ padding: "0.1rem 0.4rem", backgroundColor: `${C.warning}20`, color: C.warning, borderRadius: "4px", fontSize: "9px", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-                          opportunity
-                        </span>
-                      )}
-                    </h4>
-                    <span className="mono" style={{ fontSize: "11px", color: C.textDim }}>
-                      <strong style={{ color: catColor, fontSize: "13px" }}>{score.score.toFixed(1)}</strong>/10
-                      <span style={{ marginLeft: "0.5rem", opacity: 0.7 }}>· {tactics.length}</span>
-                    </span>
-                    {isOpen ? <ChevronUp size={16} color={C.textDim} /> : <ChevronDown size={16} color={C.textDim} />}
-                  </button>
+          {sortedTypes.map(typeName => {
+            const info = TYPE_INFO[typeName];
+            const catColor = CATEGORY_COLORS[info.category];
+            const tactics = TACTICS.filter(t => t.type === typeName);
+            const st = typeStats[typeName];
+            const isOpen = openType === typeName;
+            const opportunity = st.mean < 5;
+            const strength = isStrongType(typeName);
+            return (
+              <div key={typeName} style={{
+                backgroundColor: C.surface,
+                border: `1px solid ${isOpen ? `${catColor}50` : C.border}`,
+                borderRadius: "10px",
+                overflow: "hidden",
+                transition: "all 0.15s",
+              }}>
+                <button
+                  onClick={() => setOpenType(isOpen ? null : typeName)}
+                  style={{
+                    width: "100%", display: "grid",
+                    gridTemplateColumns: "auto 1fr auto auto",
+                    alignItems: "center", gap: "0.85rem",
+                    padding: "0.75rem 1rem",
+                    backgroundColor: "transparent", border: "none",
+                    cursor: "pointer", textAlign: "left",
+                    color: C.text,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <div style={{ width: "8px", height: "8px", borderRadius: "999px", backgroundColor: catColor, boxShadow: `0 0 6px ${catColor}80` }} />
+                    <span className="mono" style={{ fontSize: "9px", color: catColor, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{info.category}</span>
+                  </div>
+                  <h4 style={{ fontSize: "1rem", fontWeight: 600, margin: 0, color: C.text, display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                    {typeName}
+                    {opportunity && <Badge color={C.warning}>opportunity</Badge>}
+                    {strength && <Badge color={C.success}>strength</Badge>}
+                  </h4>
+                  <span className="mono" style={{ fontSize: "10px", color: C.textDim, whiteSpace: "nowrap" }}>
+                    T <strong style={{ color: C.experience }}>{fmtS(st.team)}</strong>{" "}
+                    A1 <strong style={{ color: C.offering }}>{fmtS(st.ai1)}</strong>{" "}
+                    A2 <strong style={{ color: C.config }}>{fmtS(st.ai2)}</strong>
+                    <span style={{ marginLeft: "0.5rem", opacity: 0.7 }}>· {tactics.length}</span>
+                  </span>
+                  {isOpen ? <ChevronUp size={16} color={C.textDim} /> : <ChevronDown size={16} color={C.textDim} />}
+                </button>
 
-                  {isOpen && (
-                    <div style={{ padding: "0 1rem 0.85rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
-                      {tactics.map(t => {
-                        const selected = isSelected(typeName, t.name);
-                        const disabled = !selected && tacticRecs.length >= MAX_TACTICS;
-                        return (
-                          <div key={t.name} style={{
-                            display: "grid",
-                            gridTemplateColumns: "auto 1fr auto",
-                            gap: "0.7rem",
-                            alignItems: "center",
-                            padding: "0.5rem 0.7rem",
-                            backgroundColor: selected ? `${catColor}15` : C.surface2,
-                            border: `1px solid ${selected ? `${catColor}40` : C.border}`,
-                            borderRadius: "8px",
-                          }}>
-                            <span className="mono" style={{ fontSize: "10px", color: catColor, fontWeight: 700, minWidth: "110px" }}>
-                              {t.name}
-                            </span>
-                            <p style={{ fontSize: "0.83rem", margin: 0, lineHeight: 1.4, color: C.textDim }}>
-                              {t.desc}
-                            </p>
-                            <button
-                              onClick={() => selected ? removeTactic(typeName, t.name) : addTactic(typeName, t.name)}
-                              disabled={disabled}
-                              className="mono"
-                              style={{
-                                padding: "0.3rem 0.55rem",
-                                border: "none",
-                                backgroundColor: selected ? C.danger : disabled ? C.surface3 : C.accent,
-                                color: disabled ? C.textMuted : "white",
-                                borderRadius: "5px",
-                                fontSize: "10px", fontWeight: 600,
-                                letterSpacing: "0.04em", textTransform: "uppercase",
-                                cursor: disabled ? "not-allowed" : "pointer",
-                                display: "flex", alignItems: "center", gap: "0.25rem",
-                                transition: "all 0.15s",
-                              }}
-                            >
-                              {selected ? <><XIcon size={11} /> Remove</> : <><Plus size={11} /> Add</>}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                {isOpen && (
+                  <div style={{ padding: "0 1rem 0.85rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                    {strength && (
+                      <div style={{ fontSize: "0.78rem", color: C.success, padding: "0.2rem 0 0.3rem" }}>
+                        Already a strength by your scoring. A tactic here doubles down — make sure that beats attacking a gap.
+                      </div>
+                    )}
+                    {tactics.map(t => {
+                      const selected = isSelected(typeName, t.name);
+                      const disabled = !selected && tacticRecs.length >= MAX_TACTICS;
+                      return (
+                        <div key={t.name} style={{
+                          display: "grid",
+                          gridTemplateColumns: "auto 1fr auto",
+                          gap: "0.7rem",
+                          alignItems: "center",
+                          padding: "0.5rem 0.7rem",
+                          backgroundColor: selected ? `${catColor}15` : C.surface2,
+                          border: `1px solid ${selected ? `${catColor}40` : C.border}`,
+                          borderRadius: "8px",
+                        }}>
+                          <span className="mono" style={{ fontSize: "10px", color: catColor, fontWeight: 700, minWidth: "110px" }}>
+                            {t.name}
+                          </span>
+                          <p style={{ fontSize: "0.83rem", margin: 0, lineHeight: 1.4, color: C.textDim }}>
+                            {t.desc}
+                          </p>
+                          <button
+                            onClick={() => selected ? removeTactic(typeName, t.name) : addTactic(typeName, t.name)}
+                            disabled={disabled}
+                            className="mono"
+                            style={{
+                              padding: "0.3rem 0.55rem",
+                              border: "none",
+                              backgroundColor: selected ? C.danger : disabled ? C.surface3 : C.accent,
+                              color: disabled ? C.textMuted : "white",
+                              borderRadius: "5px",
+                              fontSize: "10px", fontWeight: 600,
+                              letterSpacing: "0.04em", textTransform: "uppercase",
+                              cursor: disabled ? "not-allowed" : "pointer",
+                              display: "flex", alignItems: "center", gap: "0.25rem",
+                              transition: "all 0.15s",
+                            }}
+                          >
+                            {selected ? <><XIcon size={11} /> Remove</> : <><Plus size={11} /> Add</>}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
 
-        {/* RIGHT: selected tactics + justifications */}
-        <aside style={{ position: "sticky", top: "5rem", alignSelf: "start" }}>
+        {/* RIGHT: selected tactics + structured case */}
+        <aside style={{ position: "sticky", top: "5rem", alignSelf: "start", maxHeight: "calc(100vh - 6rem)", overflowY: "auto" }}>
           <Card style={{ borderColor: tacticRecs.length > 0 ? `${C.accent}40` : C.border }}>
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.4rem" }}>
               <Target size={14} color={C.accentBright} />
-              <span className="label" style={{ color: C.accentBright }}>Recommendations · Justify Each</span>
+              <span className="label" style={{ color: C.accentBright }}>Recommendations · Make the Case</span>
             </div>
-            <h3 style={{ fontSize: "1.15rem", fontWeight: 600, margin: "0 0 1rem", color: C.text }}>
+            <h3 style={{ fontSize: "1.15rem", fontWeight: 600, margin: "0 0 0.85rem", color: C.text }}>
               {tacticRecs.length} of {MAX_TACTICS} selected
             </h3>
 
+            {/* Portfolio checks */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "0.85rem" }}>
+              <div style={{ padding: "0.55rem 0.7rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px" }}>
+                <div className="label" style={{ fontSize: "9px" }}>Path to five</div>
+                <div className="mono" style={{ fontSize: "1rem", fontWeight: 700, marginTop: "0.2rem", color: projectedStrong >= 5 ? C.success : C.text }}>
+                  {strongNow} <span style={{ color: C.textMuted, fontWeight: 400 }}>→</span> {projectedStrong}
+                  <span style={{ fontSize: "10px", color: C.textMuted, fontWeight: 400 }}> strong types</span>
+                </div>
+              </div>
+              <div style={{ padding: "0.55rem 0.7rem", backgroundColor: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px" }}>
+                <div className="label" style={{ fontSize: "9px" }}>Categories covered</div>
+                <div style={{ display: "flex", gap: "0.3rem", marginTop: "0.3rem", flexWrap: "wrap" }}>
+                  {CATEGORIES.map(cat => {
+                    const on = coveredCats.has(cat);
+                    const col = CATEGORY_COLORS[cat];
+                    return <span key={cat} className="mono" title={cat} style={{ fontSize: "9px", fontWeight: 700, padding: "0.15rem 0.4rem", borderRadius: "4px", border: `1px solid ${on ? col : C.border}`, color: on ? col : C.textMuted, backgroundColor: on ? `${col}20` : "transparent" }}>{cat}</span>;
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {singleCategory && (
+              <div style={{ fontSize: "0.8rem", lineHeight: 1.45, color: C.text, padding: "0.6rem 0.75rem", marginBottom: "0.85rem", backgroundColor: `${C.warning}12`, border: `1px solid ${C.warning}40`, borderRadius: "8px" }}>
+                <strong style={{ color: C.warning }}>All picks are {[...coveredCats][0]} tactics.</strong> Competitors copy single-category moves quickly. Consider swapping one for a tactic in another category, or explain below why concentrating here is right.
+              </div>
+            )}
+
             {tacticRecs.length === 0 && (
-              <div style={{ fontSize: "0.88rem", lineHeight: 1.5, color: C.textDim, padding: "1rem 0", fontStyle: "italic" }}>
+              <div style={{ fontSize: "0.88rem", lineHeight: 1.5, color: C.textDim, padding: "0.5rem 0 1rem", fontStyle: "italic" }}>
                 Browse types on the left and click <span className="mono" style={{ fontStyle: "normal", color: C.accentBright }}>+ Add</span> to select tactics. Pick 2–3 total.
               </div>
             )}
@@ -2082,6 +2414,7 @@ function PhaseTactics({ companyName, teamTypeScores, tacticRecs, setTacticRecs, 
               {tacticRecs.map((r, idx) => {
                 const info = TYPE_INFO[r.type];
                 const catColor = CATEGORY_COLORS[info.category];
+                const st = typeStats[r.type];
                 return (
                   <div key={`${r.type}:${r.name}`} style={{
                     backgroundColor: C.surface2,
@@ -2090,17 +2423,19 @@ function PhaseTactics({ companyName, teamTypeScores, tacticRecs, setTacticRecs, 
                     borderRadius: "8px",
                     padding: "0.75rem 0.9rem",
                   }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.4rem" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.5rem" }}>
                       <div>
                         <div className="mono" style={{ fontSize: "9px", color: catColor, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, marginBottom: "0.15rem" }}>
-                          {String(idx + 1).padStart(2, "0")} · {r.type}
+                          {String(idx + 1).padStart(2, "0")} · {r.type} · T {fmtS(st.team)} / A1 {fmtS(st.ai1)} / A2 {fmtS(st.ai2)}
                         </div>
                         <div style={{ fontSize: "0.98rem", fontWeight: 600, color: C.text }}>
                           {r.name}
                         </div>
+                        {isStrongType(r.type) && <div style={{ fontSize: "0.72rem", color: C.success, marginTop: "0.15rem" }}>Doubles down on an existing strength</div>}
                       </div>
                       <button
                         onClick={() => removeTactic(r.type, r.name)}
+                        aria-label={`Remove ${r.name}`}
                         style={{ background: "none", border: "none", cursor: "pointer", color: C.textDim, padding: "0.2rem", borderRadius: "5px" }}
                         onMouseEnter={(e) => { e.currentTarget.style.color = C.danger; }}
                         onMouseLeave={(e) => { e.currentTarget.style.color = C.textDim; }}
@@ -2108,15 +2443,25 @@ function PhaseTactics({ companyName, teamTypeScores, tacticRecs, setTacticRecs, 
                         <XIcon size={13} />
                       </button>
                     </div>
-                    <textarea
-                      ref={(el) => { justificationRefs.current[`${r.type}:${r.name}`] = el; }}
-                      value={r.justification}
-                      onChange={(e) => updateJustification(r.type, r.name, e.target.value)}
-                      placeholder={`Why this tactic for ${companyName}? What's the evidence? What would adoption require?`}
-                      rows={3}
-                      className="iw-input"
-                      style={{ fontSize: "0.83rem", padding: "0.5rem 0.6rem" }}
-                    />
+                    {TACTIC_FIELDS.map(f => {
+                      const filled = (r[f.key] || "").trim().length > 0;
+                      return (
+                        <div key={f.key} style={{ marginTop: "0.45rem" }}>
+                          <div className="label" style={{ fontSize: "9px", marginBottom: "0.2rem", color: filled ? C.textDim : C.warning }}>
+                            {f.label}{!filled && " · required"}
+                          </div>
+                          <textarea
+                            ref={(el) => { fieldRefs.current[`${r.type}:${r.name}:${f.key}`] = el; }}
+                            value={r[f.key] || ""}
+                            onChange={(e) => updateField(r.type, r.name, f.key, e.target.value)}
+                            placeholder={f.placeholder}
+                            rows={2}
+                            className="iw-input"
+                            style={{ fontSize: "0.8rem", padding: "0.45rem 0.6rem" }}
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -2132,7 +2477,7 @@ function PhaseTactics({ companyName, teamTypeScores, tacticRecs, setTacticRecs, 
             ? "Take-away"
             : tacticRecs.length < 2
               ? `Pick at least 2 tactics (${tacticRecs.length}/2)`
-              : "Justify each tactic →"}
+              : "Complete each tactic's case →"}
           <ChevronRight size={15} />
         </PrimaryButton>
       </div>
@@ -2140,17 +2485,24 @@ function PhaseTactics({ companyName, teamTypeScores, tacticRecs, setTacticRecs, 
   );
 }
 
+function Badge({ color, children }) {
+  return (
+    <span style={{ padding: "0.1rem 0.4rem", backgroundColor: `${color}20`, color, borderRadius: "4px", fontSize: "9px", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+      {children}
+    </span>
+  );
+}
+
 // ============================================================
 // PHASE VII — TAKEAWAY
 // ============================================================
 
-function PhaseTakeaway({ companyName, teamName, teamAvg, ai1Avg, ai2Avg, ai1Name, ai2Name, triangulation, tacticRecs, downloadSummary, onBack }) {
-  const fiveTypeRule = useMemo(() => {
-    const teamHighs = triangulation.filter(g => g.team >= 7).length;
-    const ai1Highs = triangulation.filter(g => g.ai1 >= 7).length;
-    const ai2Highs = triangulation.filter(g => g.ai2 >= 7).length;
-    return { teamHighs, ai1Highs, ai2Highs };
-  }, [triangulation]);
+function PhaseTakeaway({ companyName, teamName, teamTotal, ai1Total, ai2Total, teamTypeFinal, ai1Scores, ai2Scores, projectedStrong, ai1Name, ai2Name, tacticRecs, downloadSummary, onBack }) {
+  const fiveTypeRule = {
+    teamHighs: countStrong(teamTypeFinal),
+    ai1Highs: countStrong(ai1Scores),
+    ai2Highs: countStrong(ai2Scores),
+  };
 
   const maxHighs = Math.max(fiveTypeRule.teamHighs, fiveTypeRule.ai1Highs, fiveTypeRule.ai2Highs);
 
@@ -2162,16 +2514,28 @@ function PhaseTakeaway({ companyName, teamName, teamAvg, ai1Avg, ai2Avg, ai1Name
         Your team's analysis of <strong style={{ color: C.accentBright }}>{companyName || "the company"}</strong>{teamName && <> from <strong style={{ color: C.accentBright }}>{teamName}</strong></>} is complete.
       </p>
 
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.85rem", marginTop: "1.25rem" }}>
+        {[["Team", teamTotal, C.experience], [ai1Name, ai1Total, C.offering], [ai2Name, ai2Total, C.config]].map(([lbl, v, col]) => (
+          <div key={lbl} style={{ backgroundColor: C.surface, border: `1px solid ${C.border}`, borderTop: `2px solid ${col}`, borderRadius: "10px", padding: "0.75rem 1rem" }}>
+            <div className="label">{lbl} · Total</div>
+            <div className="mono" style={{ fontSize: "1.6rem", fontWeight: 600, color: col, marginTop: "0.2rem" }}>
+              {typeof v === "number" ? v.toFixed(1) : "—"}<span style={{ fontSize: "11px", color: C.textMuted }}>/100</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
       <Card style={{ marginTop: "1.5rem", borderColor: `${C.experience}40`, backgroundColor: `${C.experience}08` }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
           <Zap size={14} color={C.experience} />
           <span className="label" style={{ color: C.experience }}>Reflection · Five-Type Threshold</span>
         </div>
         <p style={{ fontSize: "0.98rem", lineHeight: 1.65, margin: 0, color: C.text }}>
-          Keeley's research found companies innovating on <strong>five or more types simultaneously</strong> dramatically outperform single-type innovators. By the team's scoring, <strong>{companyName}</strong> innovates strongly (≥ 7) on <strong style={{ color: C.experience }}>{fiveTypeRule.teamHighs}</strong> {fiveTypeRule.teamHighs === 1 ? "type" : "types"}; by {ai1Name}, on <strong style={{ color: C.offering }}>{fiveTypeRule.ai1Highs}</strong>; by {ai2Name}, on <strong style={{ color: C.config }}>{fiveTypeRule.ai2Highs}</strong>.{" "}
+          Keeley's research found companies innovating on <strong>five or more types simultaneously</strong> dramatically outperform single-type innovators. By the team's scoring, <strong>{companyName}</strong> innovates strongly (type score ≥ {STRONG_THRESHOLD}) on <strong style={{ color: C.experience }}>{fiveTypeRule.teamHighs}</strong> {fiveTypeRule.teamHighs === 1 ? "type" : "types"}; by {ai1Name}, on <strong style={{ color: C.offering }}>{fiveTypeRule.ai1Highs}</strong>; by {ai2Name}, on <strong style={{ color: C.config }}>{fiveTypeRule.ai2Highs}</strong>.{" "}
           {maxHighs >= 5
             ? "By at least one measure, this company clears the threshold — the framework predicts durable advantage."
-            : "None of the three observers see five-or-more strong types. The company has clear room to broaden its innovation portfolio."}
+            : "None of the three observers see five-or-more strong types. The company has clear room to broaden its innovation portfolio."}{" "}
+          {tacticRecs.length > 0 && <>If your recommended tactics succeed, the team's count would rise to <strong style={{ color: C.experience }}>{projectedStrong}</strong>{projectedStrong >= 5 ? " — across the threshold." : "."}</>}
         </p>
       </Card>
 
@@ -2338,6 +2702,37 @@ function Field({ label, hint, required, children }) {
         {hint && <span className="mono" style={{ fontSize: "10px", color: C.textMuted }}>{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+function TotalPill({ value, provisional, label = "Total" }) {
+  return (
+    <div title={provisional ? "Running total — final once every question is scored" : "Total Innovation Score (sum of the ten type scores)"} style={{
+      display: "flex", alignItems: "baseline", gap: "0.45rem",
+      padding: "0.5rem 0.85rem",
+      backgroundColor: provisional ? C.surface : C.accentDim,
+      border: `1px solid ${provisional ? C.border : `${C.accent}50`}`,
+      borderRadius: "999px",
+    }}>
+      <span className="label" style={{ color: provisional ? C.textDim : C.accentBright }}>{label}{provisional ? " (running)" : ""}</span>
+      <span className="mono" style={{ fontSize: "15px", fontWeight: 700, color: provisional ? C.textDim : C.accentBright, fontVariantNumeric: "tabular-nums" }}>
+        {typeof value === "number" ? value.toFixed(1) : "—"}
+      </span>
+      <span className="mono" style={{ fontSize: "10px", color: C.textMuted }}>/100</span>
+    </div>
+  );
+}
+
+function RubricStrip({ compact }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", marginBottom: compact ? "1rem" : "1.5rem" }}>
+      {RUBRIC.map(r => (
+        <div key={r.n} style={{ display: "flex", gap: "0.55rem", alignItems: "flex-start", padding: "0.5rem 0.7rem", backgroundColor: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px" }}>
+          <span className="mono" style={{ fontSize: "14px", fontWeight: 700, color: C.accentBright, lineHeight: 1.2 }}>{r.n}</span>
+          <span style={{ fontSize: "0.78rem", lineHeight: 1.35, color: C.textDim }}><strong style={{ color: C.text }}>{r.label}</strong> — {r.desc}</span>
+        </div>
+      ))}
     </div>
   );
 }
