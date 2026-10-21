@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Innovation Workshop · Doblin Ten Types · v10</title>
+  <title>Innovation Workshop · Doblin Ten Types · v12</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233B82F6'/%3E%3Cpath d='M16 7l2.4 5.6L24 14l-5.6 2.4L16 22l-2.4-5.6L8 14l5.6-1.4L16 7z' fill='white'/%3E%3C/svg%3E">
   <style>
     html, body { margin: 0; padding: 0; background: #0A0E14; min-height: 100vh; }
@@ -67,7 +67,8 @@
       "react-dom": "https://esm.sh/react-dom@18.3.1",
       "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
       "recharts": "https://esm.sh/recharts@2.12.7?deps=react@18.3.1,react-dom@18.3.1",
-      "lucide-react": "https://esm.sh/lucide-react@0.383.0?deps=react@18.3.1"
+      "lucide-react": "https://esm.sh/lucide-react@0.383.0?deps=react@18.3.1",
+      "docx": "https://esm.sh/docx@9.5.1"
     }
   }
   </script>
@@ -342,17 +343,17 @@ const TACTICS = [
 
 const PHASES = [
   { num: "01", title: "The Company",          time: "1 min" },
-  { num: "02", title: "Deep Scoring",         time: "18 min" },
+  { num: "02", title: "Deep Scoring",         time: "17 min" },
   { num: "03", title: "First AI",             time: "4 min" },
   { num: "04", title: "Second AI",            time: "4 min" },
-  { num: "05", title: "Triangulation",        time: "5 min" },
-  { num: "06", title: "Tactic Recs",          time: "11 min" },
+  { num: "05", title: "Triangulation",        time: "7 min" },
+  { num: "06", title: "Tactic Recs",          time: "10 min" },
   { num: "07", title: "Take-Away",            time: "2 min" },
 ];
 
 const NQ = QUESTIONS.length; // 44: Brand has five questions, every other type four (Profit Model seven)
 const STORAGE_KEY = "innovation_workshop_v10";
-const APP_VERSION = "v10";
+const APP_VERSION = "v12";
 
 // A type counts as "strong" (an active innovation type) at or above this 0–10 score.
 // 7.0 ≈ consistently Medium-to-High answers across that type's questions.
@@ -375,6 +376,16 @@ const RUBRIC = [
 ];
 
 const CATEGORIES = ["Configuration", "Offering", "Experience"];
+
+// Source-check verdicts for the Triangulation verification step
+const VERDICTS = [
+  { key: "supports", label: "Supports the score",   tone: "success" },
+  { key: "partial",  label: "Partly supports",      tone: "warning" },
+  { key: "no",       label: "Does not support",     tone: "danger"  },
+  { key: "broken",   label: "Broken link / can't find source", tone: "danger" },
+  { key: "nosource", label: "No source cited for this type",   tone: "warning" },
+];
+const initialVerification = () => ({ qKey: "", ai1: { src: null, verdict: "", note: "" }, ai2: { src: null, verdict: "", note: "" } });
 
 // ============================================================
 // HELPERS
@@ -453,14 +464,68 @@ const computeTypeScore = (typeName, qs) => {
 //   "PM1: 2 | evidence"   — also tolerates markdown bold, bullets, tables ("| PM1 | 2 | evidence |"),
 //   "PM-1 = 2 — evidence", "PM1 (2/3): evidence", and echoed question text before the score.
 // Returns { scores: { "Type:i": 0–3 }, evidence: { "Type:i": "..." }, summary: "..." }.
+const CODE_ALT = "PM|NW|ST|PR|PP|PS|SV|CH|BR|CE";
+const NONE_RE = /^(none|no source|no sources|no public source|no reliable|not available|unavailable|n\/a)\b/i;
+
+// Turn one SRC line's text into { title, url } — handles plain URLs, markdown links,
+// and reference-style citations ("[Reuters][3]" resolved from "[3]: https://..." lines).
+const parseSourceText = (txt, refs) => {
+  let url = null;
+  const direct = txt.match(/https?:\/\/[^\s<>()\]\[]+/);
+  if (direct) url = direct[0].replace(/[.,;:'"]+$/, "");
+  if (!url) {
+    const ref = txt.match(/\[[^\]]*\]\s*\[(\w+)\]/) || txt.match(/\[(\d+)\]/);
+    if (ref && refs[ref[1]]) url = refs[ref[1]].url;
+  }
+  let title = txt
+    .replace(/\(?https?:\/\/[^\s<>()]+\)?/g, "")
+    .replace(/\[([^\]]*)\]\s*\[\w+\]/g, "$1")
+    .replace(/\[([^\]]*)\]/g, "$1")
+    .replace(/\s*[—–|-]\s*$/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!title && url) { try { title = new URL(url).hostname.replace(/^www\./, ""); } catch (e) { title = url; } }
+  return { title, url };
+};
+
 const parseAIResponse = (text) => {
   const scores = {};
   const evidence = {};
-  if (!text) return { scores, evidence, summary: "" };
-  const codeRe = /(?:^|[^A-Za-z])(PM|NW|ST|PR|PP|PS|SV|CH|BR|CE)\s*[-_.]?\s*(\d)(?!\d)/i;
+  const sources = {};      // type -> [{ title, url }]
+  const noSource = {};     // type -> reason the AI gave for citing nothing
+  const srcSeen = {};      // type -> true if any SRC line appeared
+  if (!text) return { scores, evidence, sources, noSource, srcSeen, summary: "" };
+  // Some chat UIs collapse lines when copied: put each "CODE: n" and "SRC-CODE:" back on its own line.
+  const pre = text
+    .replace(new RegExp(`([^\\n])[ \\t]+(?=(?:\\*\\*)?(?:${CODE_ALT})\\d\\s*\\**\\s*[:=]\\s*\\**\\s*[0-3](?!\\d))`, "g"), "$1\n")
+    .replace(new RegExp(`([^\\n])[ \\t]+(?=(?:\\*\\*)?SRC[-_ ]?(?:${CODE_ALT})\\b)`, "gi"), "$1\n");
+  const lines = pre.split(/\r?\n/);
+  // Reference-style link definitions, e.g. '[3]: https://example.com "Title"'
+  const refs = {};
+  lines.forEach(l => {
+    const r = l.match(/^\s*\[(\w+)\]:\s*(https?:\/\/\S+)(?:\s+"([^"]*)")?/);
+    if (r) refs[r[1]] = { url: r[2], title: r[3] || "" };
+  });
+  const srcRe = new RegExp(`^[\\s*#>|\\-•·]*SRC[-_ ]?(${CODE_ALT})\\b[\\s*]*[:|\\-–—]?\\s*(.*)$`, "i");
+  const codeRe = new RegExp(`(?:^|[^A-Za-z])(${CODE_ALT})\\s*[-_.]?\\s*(\\d)(?!\\d)`, "i");
   const leftover = [];
-  for (const rawLine of text.split(/\r?\n/)) {
+  for (const rawLine of lines) {
     const line = rawLine.replace(/\*\*|__|`/g, "");
+    if (/^\s*\[(\w+)\]:\s*https?:\/\//.test(line)) continue;
+    const sm0 = line.match(srcRe);
+    if (sm0) {
+      const typeName = CODE_TO_TYPE[sm0[1].toUpperCase()];
+      const body = sm0[2].replace(/[\s|]+$/, "").trim();
+      if (/^\(source line/i.test(body)) continue; // echoed prompt placeholder
+      srcSeen[typeName] = true;
+      if (!body || NONE_RE.test(body)) {
+        noSource[typeName] = body.replace(NONE_RE, "").replace(/^[\s:—–\-|]+/, "").trim() || "No reliable public source found.";
+      } else {
+        const src = parseSourceText(body, refs);
+        if (src.title || src.url) (sources[typeName] = sources[typeName] || []).push(src);
+      }
+      continue;
+    }
     const m = line.match(codeRe);
     let matched = false;
     if (m && m.index <= 12) {
@@ -487,8 +552,33 @@ const parseAIResponse = (text) => {
   // The strength/gap paragraph: longest leftover paragraph that isn't a header.
   const paras = leftover.join("\n").split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length > 80);
   const summary = paras.sort((a, b) => b.length - a.length)[0] || "";
-  return { scores, evidence, summary };
+  // A declared "none" only counts if the type has no real citation as well.
+  Object.keys(sources).forEach(t => { delete noSource[t]; });
+  return { scores, evidence, sources, noSource, srcSeen, summary };
 };
+
+// Per-type source status for one AI:
+//   linked   — at least one citation with a URL (verifiable)
+//   unlinked — citation(s) but no URL to open
+//   declared — the AI stated no reliable public source exists (can be legitimate for private companies)
+//   missing  — no SRC line at all
+const sourceStatus = (parsed, typeName) => {
+  const list = parsed.sources[typeName] || [];
+  if (list.some(x => x.url)) return "linked";
+  if (list.length) return "unlinked";
+  if (parsed.noSource[typeName] !== undefined) return "declared";
+  return "missing";
+};
+const SOURCE_STATUS = {
+  linked:   { label: "Linked source",        short: "SRC ✓",    tone: "success" },
+  unlinked: { label: "Cited, no link",       short: "NO LINK",  tone: "warning" },
+  declared: { label: "No public source",     short: "NONE",     tone: "warning" },
+  missing:  { label: "No source given",      short: "MISSING",  tone: "danger"  },
+};
+const PRIVATE_CO_CAVEAT = "Private companies often don't disclose financials, ownership, or internal operations, so \"no public source\" can be a legitimate answer. Treat those scores as lower-confidence rather than wrong.";
+const highScoreUnsourced = (parsed, q, typeName) =>
+  sourceStatus(parsed, typeName) !== "linked" &&
+  QUESTIONS.filter(x => x.type === typeName).some((_, i) => (q[`${typeName}:${i}`] ?? -1) >= 2);
 
 const buildAIPrompt = (companyName, companyContext) => {
   const name = companyName || "[COMPANY NAME]";
@@ -496,25 +586,36 @@ const buildAIPrompt = (companyName, companyContext) => {
   const scope = companyContext.trim() ? `\nScope set by the team: ${companyContext.trim()}\n` : "";
   const qBlock = TYPES_ORDER.map(t => {
     const qs = QUESTIONS.filter(q => q.type === t);
-    return `${t.toUpperCase()}\n` + qs.map((q, i) => `${questionCode(t, i)}. ${q.text}`).join("\n");
+    return `${t.toUpperCase()}\n` + qs.map((q, i) => `${questionCode(t, i)}. ${q.text}`).join("\n") + `\nSRC-${TYPE_CODES[t]}: (source line(s) for ${t})`;
   }).join("\n\n");
-  return `You are an expert innovation analyst. Assess ${name} using Larry Keeley's Doblin Ten Types of Innovation framework (Keeley et al., 2013). Use publicly available information as of ${asOf}. If you can search the web, do so before answering.
+  return `You are an expert innovation analyst. Assess ${name} using Larry Keeley's Doblin Ten Types of Innovation framework (Keeley et al., 2013). Use publicly available information as of ${asOf}. Search the web before answering if you can.
 ${scope}
 Answer each of the ${NQ} diagnostic questions below on this 0–3 scale, judged relative to direct competitors and industry norms:
 ${RUBRIC.map(r => `  ${r.n} = ${r.label} — ${r.desc}`).join("\n")}
 If you cannot find public evidence for a question, score it 0 and write "no public evidence".
 
-Return exactly one line per question, in this format, using the code shown:
+FORMAT — one line per question, using the code shown:
 CODE: SCORE | one-sentence evidence
+
+SOURCES — after the last question of each type, add 1–3 source lines for that type:
+SRC-CODE: Title — Publisher, date — full URL
+- Every type must have at least one SRC line.
+- Any score of 2 or 3 must be supported by a source listed for that type.
+- Cite only sources you actually consulted. Never invent a title or URL.
+- If no reliable public source exists (common for private companies that do not disclose financials, ownership, or operations), write: SRC-CODE: none — brief reason
 
 Example:
 PM1: 2 | Sells hardware near cost and earns most of its margin on subscriptions.
+...
+PM7: 1 | Inventory turns are in line with peers.
+SRC-PM: FY2025 Annual Report (Form 10-K) — Example Corp, Feb 2026 — https://www.example.com/10k-2025
+SRC-PM: "Example Corp's subscription pivot" — Reuters, Mar 2026 — https://www.reuters.com/...
 
-Rules: list all ${NQ} codes in order; do not use a table; do not add type totals or 0–10 scores (the workshop calculates those).
+Rules: list all ${NQ} question codes in order, each type followed by its SRC line(s); do not use a table; do not add type totals or 0–10 scores (the workshop calculates those).
 
 ${qBlock}
 
-After the ${NQ} lines, write one short paragraph (3–4 sentences) naming the company's single biggest innovation strength and single biggest gap, with one concrete piece of evidence for each.`;
+After the last SRC line, write one short paragraph (3–4 sentences) naming the company's single biggest innovation strength and single biggest gap, with one concrete piece of evidence for each.`;
 };
 
 const escapeHTML = (s) => String(s ?? "")
@@ -522,6 +623,518 @@ const escapeHTML = (s) => String(s ?? "")
   .replace(/</g, "&lt;")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
+
+// ============================================================
+// CONSULTING-STYLE REPORT (.docx) — built with the docx library
+// ============================================================
+
+// Draws the three-way bar chart to a PNG (Uint8Array) for the report.
+const drawChartPNG = async ({ series, labels }) => {
+  try {
+    const W = 1872, H = 860, S = 2; // 2x for print sharpness (renders at 936x430 px)
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const g = cv.getContext("2d");
+    g.fillStyle = "#FFFFFF"; g.fillRect(0, 0, W, H);
+    const L = 70 * S / 2, R = W - 20, T = 40, B = H - 150;
+    g.font = `${11 * S}px Calibri, Arial, sans-serif`;
+    // gridlines
+    for (let v = 0; v <= 10; v += 2) {
+      const y = B - (v / 10) * (B - T);
+      g.strokeStyle = v === 0 ? "#475569" : "#E2E8F0"; g.lineWidth = v === 0 ? 2 : 1.5;
+      g.beginPath(); g.moveTo(L, y); g.lineTo(R, y); g.stroke();
+      g.fillStyle = "#64748B"; g.textAlign = "right"; g.textBaseline = "middle";
+      g.fillText(String(v), L - 12, y);
+    }
+    const groups = labels.length, gw = (R - L) / groups, bw = gw * 0.22, gap = gw * 0.04;
+    labels.forEach((lab, i) => {
+      const x0 = L + i * gw + (gw - (3 * bw + 2 * gap)) / 2;
+      series.forEach((s, k) => {
+        const v = typeof s.values[i] === "number" ? s.values[i] : 0;
+        const h = (v / 10) * (B - T);
+        const x = x0 + k * (bw + gap);
+        g.fillStyle = s.color; g.fillRect(x, B - h, bw, h);
+        g.fillStyle = s.color; g.textAlign = "center"; g.textBaseline = "bottom";
+        g.font = `bold ${9 * S}px Calibri, Arial, sans-serif`;
+        g.fillText(typeof s.values[i] === "number" ? s.values[i].toFixed(1) : "—", x + bw / 2, B - h - 4);
+      });
+      g.fillStyle = "#334155"; g.textAlign = "center"; g.textBaseline = "top";
+      g.font = `${10.5 * S}px Calibri, Arial, sans-serif`;
+      String(lab).split("\n").forEach((ln, j) => g.fillText(ln, L + i * gw + gw / 2, B + 12 + j * 24));
+    });
+    // legend
+    g.font = `${11 * S}px Calibri, Arial, sans-serif`; g.textBaseline = "middle"; g.textAlign = "left";
+    const widths = series.map(s => g.measureText(s.name).width + 60);
+    let lx = (W - widths.reduce((a, b) => a + b, 0)) / 2;
+    series.forEach((s, k) => {
+      g.fillStyle = s.color; g.fillRect(lx, H - 40, 24, 24);
+      g.fillStyle = "#334155"; g.fillText(s.name, lx + 34, H - 28);
+      lx += widths[k];
+    });
+    const blob = await new Promise(res => cv.toBlob(res, "image/png"));
+    return new Uint8Array(await blob.arrayBuffer());
+  } catch (e) { return null; }
+};
+
+const buildReportDocx = (lib, d) => {
+  const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, ShadingType, BorderStyle,
+    AlignmentType, Header, Footer, PageNumber, ExternalHyperlink, InternalHyperlink, BookmarkStart, BookmarkEnd, ImageRun,
+    VerticalAlign, TabStopType, HeightRule, HeadingLevel, LineRuleType,
+  } = lib;
+  const { ins } = d;
+  const a1 = ins.a1, a2 = ins.a2, f1 = ins.f1;
+  const company = d.companyName || "The Company";
+  const scope = (d.companyContext || "").trim();
+  const preparedBy = d.teamName || "Workshop Team";
+
+  // Palette (hex without #)
+  const NAVY = "0B1F3A", INK = "1F2937", SLATE = "475569", MUTED = "64748B", RULE = "D9DEE5", TINT = "F3F5F8", GOLD = "B8860B", PALE = "C9D3E0", LINK = "1D4ED8";
+  const TEAM = "C2410C", AI1 = "0F766E", AI2 = "6D28D9";
+  const CAT = { Configuration: "6D28D9", Offering: "047857", Experience: "C2410C" };
+  const TIER = { Differentiator: "047857", Developing: "B45309", Opportunity: "B91C1C", "—": MUTED };
+  const STATUS = { linked: "047857", unlinked: "B45309", declared: "B45309", missing: "B91C1C" };
+  const FONT = "Calibri", SERIF = "Georgia";
+  const PAGE_W = 12240, MARGIN = 1296; // 0.9 in
+  const CW = PAGE_W - 2 * MARGIN; // content width, twips (9648)
+  const fmt = (v) => typeof v === "number" ? v.toFixed(2) : "—";
+
+  // ---------- primitives ----------
+  const r = (text, o = {}) => new TextRun({ text: String(text ?? ""), font: o.font || FONT, size: Math.round((o.size || 10.5) * 2), bold: o.bold, italics: o.italic, color: o.color || INK, characterSpacing: o.spacing, allCaps: o.caps, underline: o.underline ? {} : undefined });
+  const p = (children, o = {}) => new Paragraph({
+    children: Array.isArray(children) ? children : [typeof children === "string" ? r(children, o) : children],
+    spacing: { before: Math.round((o.before ?? 0) * 20), after: Math.round((o.after ?? 6) * 20), line: o.line ? Math.round(o.line * 240) : 264, lineRule: LineRuleType.AUTO },
+    alignment: o.align, keepNext: o.keepNext, keepLines: o.keepLines ?? true, pageBreakBefore: o.pageBreak,
+    border: o.border, indent: o.indent, tabStops: o.tabs, heading: o.heading,
+  });
+  const NB = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
+  const noBorders = { top: NB, bottom: NB, left: NB, right: NB, insideHorizontal: NB, insideVertical: NB };
+  const line = (color = RULE, size = 4) => ({ style: BorderStyle.SINGLE, size, color });
+  const cell = (children, o = {}) => new TableCell({
+    children: children.length ? children : [p("")],
+    width: { size: o.w, type: WidthType.DXA },
+    shading: o.fill ? { fill: o.fill, type: ShadingType.CLEAR, color: "auto" } : undefined,
+    margins: { top: o.mt ?? 80, bottom: o.mb ?? 80, left: o.ml ?? 100, right: o.mr ?? 100 },
+    borders: { top: o.top || NB, bottom: o.bottom || NB, left: o.left || NB, right: o.right || NB },
+    verticalAlign: o.v || VerticalAlign.TOP,
+    columnSpan: o.span,
+  });
+  const table = (rows, widths, o = {}) => new Table({
+    rows, columnWidths: widths, width: { size: widths.reduce((a, b) => a + b, 0), type: WidthType.DXA },
+    borders: noBorders, margins: o.margins,
+  });
+  const row = (cells, o = {}) => new TableRow({ children: cells, cantSplit: o.cantSplit ?? true, tableHeader: o.header, height: o.height ? { value: o.height, rule: o.rule || HeightRule.ATLEAST } : undefined });
+  // Keep a block on one page: one-cell table whose row can't split
+  const keep = (children, o = {}) => table([row([cell(children, { w: CW, ml: 0, mr: 0, mt: o.mt ?? 0, mb: o.mb ?? 0 })])], [CW]);
+  const spacer = (pt) => p([r("")], { after: 0, before: pt, line: 1 });
+
+  // ---------- recurring blocks ----------
+  // Explicit bookmark start/end with unique numeric ids (the library's Bookmark helper reuses id 1)
+  let bmSeq = 0;
+  const sectionHead = (id, kicker, title, lede) => { const bm = ++bmSeq; return [
+    p([r(kicker, { size: 9, bold: true, color: GOLD, caps: true, spacing: 40 })], { pageBreak: true, keepNext: true, after: 2 }),
+    p([new BookmarkStart(id, bm), r(title, { font: SERIF, size: 24, color: NAVY }), new BookmarkEnd(bm)], { heading: HeadingLevel.HEADING_1, keepNext: true, after: 6 }),
+    ...(lede ? [p([r(lede, { size: 11.5, color: SLATE })], { after: 12, line: 1.25, border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: RULE, space: 8 } } })] : []),
+  ]; };
+  const keyPoints = (points, label = "Key points") => table([row([cell([
+    p([r(label, { size: 8.5, bold: true, color: NAVY, caps: true, spacing: 30 })], { after: 4 }),
+    ...points.map(t => p([r("▸  ", { color: GOLD, bold: true }), r(t, { size: 10 })], { after: 3, indent: { left: 220, hanging: 220 } })),
+  ], { w: CW, fill: TINT, left: line(NAVY, 24), ml: 220, mr: 200, mt: 140, mb: 140 })])], [CW]);
+  const h3 = (t, color = NAVY, o = {}) => p([r(t, { size: 12, bold: true, color })], { before: o.before ?? 14, after: 3, keepNext: true, border: o.rule ? { bottom: { style: BorderStyle.SINGLE, size: 6, color, space: 2 } } : undefined });
+  const note = (t, o = {}) => p([r(t, { size: 8.5, color: MUTED, italic: o.italic })], { after: o.after ?? 4, keepNext: o.keepNext });
+  const th = (t, w, align) => cell([p([r(t, { size: 8.5, bold: true, color: "FFFFFF" })], { after: 0, align, keepNext: true })], { w, fill: NAVY, mt: 70, mb: 70 });
+  const td = (children, w, o = {}) => cell(Array.isArray(children) ? children : [p([r(children, { size: o.size || 9.5, bold: o.bold, color: o.color })], { after: 0, align: o.align })], { w, bottom: line(), fill: o.fill, top: o.topLine ? line(NAVY, 8) : undefined, mt: 70, mb: 70 });
+  const num = (v, w, color, bold) => td(typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : (v ?? "—"), w, { align: AlignmentType.RIGHT, color, bold });
+  const extLink = (text, url, size = 9) => new ExternalHyperlink({ link: url, children: [r(text, { size, color: LINK, underline: true })] });
+
+  // ---------- COVER ----------
+  const cover = [
+    table([row([cell([
+      p([r("Innovation Portfolio Assessment", { size: 9, color: PALE, caps: true, spacing: 60 })], { after: 120 }),
+      p([r(company, { font: SERIF, size: 40, color: "FFFFFF" })], { after: 4, line: 1.0 }),
+      ...(scope ? [p([r(scope, { size: 13, color: PALE, italic: true })], { after: 10 })] : []),
+      p([r("")], { after: 6, border: { bottom: { style: BorderStyle.SINGLE, size: 16, color: GOLD, space: 1 } }, indent: { right: CW - 1700 } }),
+      p([r("Ten Types of Innovation diagnostic and strategic recommendations", { size: 13, color: "FFFFFF" })], { after: 0 }),
+    ], { w: CW, fill: NAVY, ml: 600, mr: 600, mt: 600, mb: 560, v: VerticalAlign.BOTTOM })], { height: 6200, rule: HeightRule.EXACT })], [CW]),
+    spacer(30),
+    table([row([
+      cell([
+        p([r("Prepared for", { size: 8, bold: true, color: MUTED, caps: true, spacing: 30 })], { after: 2 }),
+        p([r(`${company} leadership team`, { size: 12, color: NAVY })], { after: 14 }),
+        p([r("Prepared by", { size: 8, bold: true, color: MUTED, caps: true, spacing: 30 })], { after: 2 }),
+        p([r(preparedBy, { size: 12, color: NAVY })], { after: 14 }),
+        p([r("Date", { size: 8, bold: true, color: MUTED, caps: true, spacing: 30 })], { after: 2 }),
+        p([r(d.dateStr, { size: 12, color: NAVY })], { after: 0 }),
+      ], { w: CW / 2, ml: 0 }),
+      cell([
+        p([r("Approach", { size: 8, bold: true, color: MUTED, caps: true, spacing: 30 })], { after: 2 }),
+        p([r(`A ${d.NQ}-question diagnostic across Doblin's ten innovation types, scored by the team and independently by ${a1} and ${a2}, then triangulated and checked against cited sources.`, { size: 10, color: SLATE })], { after: 0, line: 1.2 }),
+      ], { w: CW / 2, left: line(RULE, 6), ml: 300 }),
+    ])], [CW / 2, CW / 2]),
+    spacer(150),
+    p([r(`Confidential  ·  Prepared for discussion purposes  ·  Innovation Workshop ${d.APP_VERSION}`, { size: 8, color: MUTED })], { border: { top: { style: BorderStyle.SINGLE, size: 4, color: RULE, space: 6 } } }),
+  ];
+
+  // ---------- CONTENTS ----------
+  const TOC = [
+    ["sec_exec", "•", "Executive Summary", "Headline findings and recommendations at a glance"],
+    ["sec_recs", "1", "Strategic Recommendations", "The moves we recommend, the evidence, and what adoption requires"],
+    ["sec_profile", "2", "Innovation Profile", "Scores for all ten innovation types and the Total Innovation Score"],
+    ["sec_tri", "3", "Triangulation", "Where the team and two independent AI assessments agree and differ"],
+    ["sec_evidence", "4", "Evidence Quality", "Source coverage and the team's verification of AI citations"],
+    ["sec_appA", "A", "Appendix A · Question-Level Scoring", `All ${d.NQ} diagnostic questions, three sources, with AI evidence`],
+    ["sec_appB", "B", "Appendix B · AI Citations", "Every source each AI cited, by innovation type, with links"],
+    ["sec_appC", "C", "Appendix C · Methodology", "Framework, scoring instrument, thresholds, and limitations"],
+  ];
+  const contents = [
+    p([r("Contents", { size: 9, bold: true, color: GOLD, caps: true, spacing: 40 })], { after: 2 }),
+    p([r("In this report", { font: SERIF, size: 24, color: NAVY })], { after: 12 }),
+    table(TOC.map(([id, n, title, desc]) => row([
+      cell([p([r(n, { font: SERIF, size: 16, color: GOLD })], { after: 0 })], { w: 700, bottom: line(), ml: 0, mt: 150, mb: 150 }),
+      cell([
+        p([new InternalHyperlink({ anchor: id, children: [r(title, { size: 13, bold: true, color: NAVY })] })], { after: 2 }),
+        p([r(desc, { size: 9.5, color: MUTED })], { after: 0 }),
+      ], { w: CW - 700, bottom: line(), mt: 150, mb: 150 }),
+    ])), [700, CW - 700]),
+    note("Section titles are links. Scores are on a 0–10 scale per innovation type; the Total Innovation Score is out of 100.", { after: 0 }),
+  ];
+
+  // ---------- EXECUTIVE SUMMARY ----------
+  const tileCell = (label, total, strong, color, extra) => cell([
+    p([r(label, { size: 8, bold: true, color: MUTED, caps: true, spacing: 20 })], { after: 2 }),
+    p([r(f1(total), { font: SERIF, size: 24, color }), r("  / 100", { size: 10, color: MUTED })], { after: 2, line: 1.0 }),
+    p([r(`Strong types: ${strong} of 10${extra ? `  ·  ${extra}` : ""}`, { size: 8.5, color: SLATE })], { after: 0 }),
+  ], { w: Math.floor(CW / 3), fill: TINT, top: line(color, 18), ml: 160, mr: 120, mt: 100, mb: 100 });
+  const tiles = table([row([
+    tileCell("Team assessment", d.teamTotal, ins.strongTeam, TEAM),
+    tileCell(a1, d.ai1Total, ins.strongA1, AI1, `${ins.linked1}/10 sourced`),
+    tileCell(a2, d.ai2Total, ins.strongA2, AI2, `${ins.linked2}/10 sourced`),
+  ])], [Math.floor(CW / 3), Math.floor(CW / 3), CW - 2 * Math.floor(CW / 3)]);
+
+  const findingsTbl = table(ins.findings.map((fd, i) => row([
+    cell([p([r(String(i + 1), { bold: true, color: GOLD, size: 10 })], { after: 0 })], { w: 360, ml: 0, mt: 40, mb: 40 }),
+    cell([p([r(`${fd.title}. `, { bold: true, color: NAVY, size: 9.5 }), r(fd.text, { size: 9.5 })], { after: 0, line: 1.1 })], { w: CW - 360, mt: 40, mb: 40 }),
+  ])), [360, CW - 360]);
+
+  const recs = d.tacticRecs;
+  const impact = recs.length ? `If these moves succeed, ${company} would have up to ${d.projectedStrong} strong innovation types (from ${ins.strongTeam} today)${d.projectedStrong >= 5 ? ", reaching the five-type threshold" : `, still ${5 - d.projectedStrong} short of the five-type threshold`}. The portfolio spans ${ins.recCats.length} of 3 categories (${ins.recCats.join(", ")}).` : "";
+  const recBox = table([row([cell([
+    p([r("Our recommendations", { size: 8.5, bold: true, color: GOLD, caps: true, spacing: 30 })], { after: 2 }),
+    p([r(recs.length ? `${recs.length} moves for ${company}` : "No recommendations recorded", { font: SERIF, size: 15, color: NAVY })], { after: 6 }),
+    ...(recs.length ? [table(recs.map((rc, i) => {
+      const cat = d.TYPE_INFO[rc.type].category;
+      return row([
+        cell([p([r(String(i + 1), { font: SERIF, size: 20, color: NAVY })], { after: 0, line: 1.0 })], { w: 560, ml: 0, top: line(), mt: 90, mb: 90 }),
+        cell([
+          p([r(rc.name, { size: 12, bold: true, color: NAVY }), r(`   ${rc.type} · ${cat}`, { size: 8.5, color: CAT[cat] })], { after: 2 }),
+          p([r("Why: ", { bold: true, size: 9.5 }), r((rc.gap || "").trim() || "—", { size: 9.5 })], { after: 1, line: 1.15 }),
+          p([r("What it takes: ", { bold: true, size: 9.5 }), r((rc.adoption || "").trim() || "—", { size: 9.5 })], { after: 0, line: 1.15 }),
+        ], { w: CW - 560 - 560, top: line(), mt: 90, mb: 90 }),
+      ]);
+    }), [560, CW - 1120])] : []),
+    ...(impact ? [p([r(impact, { size: 9.5, color: SLATE })], { before: 6, after: 0, line: 1.15 })] : []),
+  ], { w: CW, top: line(NAVY, 12), bottom: line(NAVY, 12), left: line(NAVY, 12), right: line(NAVY, 12), ml: 260, mr: 260, mt: 160, mb: 160 })])], [CW]);
+
+  const execSummary = [
+    ...sectionHead("sec_exec", "Executive summary", "The bottom line", ins.headline),
+    tiles,
+    spacer(6),
+    recBox,
+    h3("Key findings", NAVY, { before: 10 }),
+    findingsTbl,
+  ];
+
+  // ---------- 1. RECOMMENDATIONS ----------
+  const recPoints = [];
+  if (recs.length) {
+    recPoints.push(`${recs.length} recommended moves across ${ins.recCats.length} of 3 innovation categories (${ins.recCats.join(", ")}).${ins.recCats.length === 1 && recs.length > 1 ? " A single-category portfolio is easier for competitors to copy; the team should be ready to defend the focus." : ""}`);
+    recPoints.push(`Path to five: strong types rise from ${ins.strongTeam} to as many as ${d.projectedStrong} if every move succeeds${d.projectedStrong >= 5 ? " — enough to clear the five-type threshold" : ""}.`);
+    const attacked = [...new Set(recs.filter(rc => (ins.means[rc.type] ?? 10) < 5).map(rc => rc.type))];
+    if (attacked.length) recPoints.push(`${ins.listJoin(attacked)} ${attacked.length === 1 ? "is an opportunity type" : "are opportunity types"} (three-source average below 5), where a move is least expected.`);
+    if (ins.doublingDown.length) recPoints.push(`${ins.listJoin(ins.doublingDown.map(x => x.name))} ${ins.doublingDown.length === 1 ? "builds" : "build"} on an existing strength rather than closing a gap.`);
+  } else recPoints.push("No recommendations were recorded.");
+
+  const recCard = (rc, i) => {
+    const cat = d.TYPE_INFO[rc.type].category, cc = CAT[cat];
+    const tdef = d.TACTICS.find(x => x.type === rc.type && x.name === rc.name);
+    const strong = typeof d.teamTypeFinal[rc.type] === "number" && d.teamTypeFinal[rc.type] >= d.STRONG_THRESHOLD;
+    const field = (label, val) => row([
+      cell([p([r(label, { size: 8.5, bold: true, color: MUTED, caps: true, spacing: 15 })], { after: 0 })], { w: 2200, top: line(), ml: 0, mt: 90, mb: 90 }),
+      cell([p([r((val || "").trim() || "(not recorded)", { size: 10 })], { after: 0, line: 1.2 })], { w: CW - 2200, top: line(), mt: 90, mb: 90 }),
+    ]);
+    return [spacer(10), table([row([cell([
+      table([row([
+        cell([p([r(String(i + 1).padStart(2, "0"), { font: SERIF, size: 30, color: NAVY })], { after: 0, line: 1.0 })], { w: 900, ml: 0 }),
+        cell([
+          p([r(`${rc.type} · ${cat}`, { size: 8.5, bold: true, color: cc, caps: true, spacing: 15 }), ...(strong ? [r("     Builds on a strength", { size: 8, bold: true, color: "047857" })] : [])], { after: 1 }),
+          p([r(rc.name, { font: SERIF, size: 16, color: NAVY })], { after: 2 }),
+          ...(tdef ? [p([r(tdef.desc, { size: 9.5, italic: true, color: SLATE })], { after: 3 })] : []),
+          p([r(`Current ${rc.type} score:  `, { size: 8.5, color: MUTED }), r(`Team ${fmt(d.teamTypeFinal[rc.type])}`, { size: 8.5, bold: true, color: TEAM }), r("  ·  ", { size: 8.5, color: MUTED }), r(`${a1} ${fmt(d.ai1Scores[rc.type])}`, { size: 8.5, bold: true, color: AI1 }), r("  ·  ", { size: 8.5, color: MUTED }), r(`${a2} ${fmt(d.ai2Scores[rc.type])}`, { size: 8.5, bold: true, color: AI2 })], { after: 4 }),
+        ], { w: CW - 900 }),
+      ])], [900, CW - 900]),
+      table([field("The opportunity", rc.gap), field("Supporting evidence", rc.evidence), field("What adoption requires", rc.adoption)], [2200, CW - 2200]),
+    ], { w: CW, top: line(cc, 18), ml: 0, mr: 0, mt: 140, mb: 60 })])], [CW])];
+  };
+
+  const recSection = [
+    ...sectionHead("sec_recs", "Section 1", "Strategic Recommendations", `The moves the team recommends ${company} make next, chosen from Doblin's library of ${d.TACTICS.length} innovation tactics and targeted at the gaps the diagnostic revealed.`),
+    keyPoints(recPoints),
+    ...(recs.length ? recs.flatMap(recCard) : [note("No tactics were recorded.")]),
+  ];
+
+  // ---------- 2. INNOVATION PROFILE ----------
+  const PW = [1500, 2350, 950, 1150, 1150, 1000, CW - (1500 + 2350 + 950 + 1150 + 1150 + 1000)];
+  const profileRows = d.TYPES_ORDER.map((t, idx) => {
+    const cat = d.TYPE_INFO[t].category;
+    const prev = idx ? d.TYPE_INFO[d.TYPES_ORDER[idx - 1]].category : null;
+    const tier = ins.tier(ins.means[t]);
+    return row([
+      td(cat !== prev ? cat : "", PW[0], { size: 8.5, bold: true, color: CAT[cat] }),
+      td(t, PW[1], { bold: true }),
+      num(d.teamTypeFinal[t], PW[2], TEAM), num(d.ai1Scores[t], PW[3], AI1), num(d.ai2Scores[t], PW[4], AI2),
+      td(f1(ins.means[t]), PW[5], { align: AlignmentType.RIGHT, bold: true }),
+      td(tier, PW[6], { size: 8.5, bold: true, color: TIER[tier] }),
+    ]);
+  });
+  const sumRow = (label, v0, v1, v2, o = {}) => row([
+    cell([p([r(label, { size: 9.5, bold: o.bold })], { after: 0 })], { w: PW[0] + PW[1], span: 2, fill: o.fill, top: o.top, bottom: line(), mt: 70, mb: 70 }),
+    cell([p([r(String(v0), { size: 9.5, bold: o.bold, color: TEAM })], { after: 0, align: AlignmentType.RIGHT })], { w: PW[2], fill: o.fill, top: o.top, bottom: line(), mt: 70, mb: 70 }),
+    cell([p([r(String(v1), { size: 9.5, bold: o.bold, color: AI1 })], { after: 0, align: AlignmentType.RIGHT })], { w: PW[3], fill: o.fill, top: o.top, bottom: line(), mt: 70, mb: 70 }),
+    cell([p([r(String(v2), { size: 9.5, bold: o.bold, color: AI2 })], { after: 0, align: AlignmentType.RIGHT })], { w: PW[4], fill: o.fill, top: o.top, bottom: line(), mt: 70, mb: 70 }),
+    cell([p("")], { w: PW[5] + PW[6], span: 2, fill: o.fill, top: o.top, bottom: line(), mt: 70, mb: 70 }),
+  ]);
+  const profileTable = table([
+    row([th("Category", PW[0]), th("Innovation type", PW[1]), th("Team", PW[2], AlignmentType.RIGHT), th(a1, PW[3], AlignmentType.RIGHT), th(a2, PW[4], AlignmentType.RIGHT), th("Average", PW[5], AlignmentType.RIGHT), th("Position", PW[6])], { header: true }),
+    ...profileRows,
+    sumRow("Total Innovation Score (0–100)", f1(d.teamTotal), f1(d.ai1Total), f1(d.ai2Total), { bold: true, fill: TINT, top: line(NAVY, 8) }),
+    sumRow(`Strong types (score ≥ ${d.STRONG_THRESHOLD})`, ins.strongTeam, ins.strongA1, ins.strongA2),
+    sumRow("Types with a linked source", "—", `${ins.linked1}/10`, `${ins.linked2}/10`),
+  ], PW);
+
+  const profilePoints = [
+    `Total Innovation Score: Team ${f1(d.teamTotal)}, ${a1} ${f1(d.ai1Total)}, ${a2} ${f1(d.ai2Total)} (out of 100).`,
+    ins.topTypes.length ? `Strongest: ${ins.listJoin(ins.topTypes.map(t => `${t} (${f1(ins.means[t])})`))}.` : null,
+    ins.bottomTypes.length ? `Weakest: ${ins.listJoin(ins.bottomTypes.map(t => `${t} (${f1(ins.means[t])})`))}.` : null,
+    ins.catMeans.length >= 2 ? `By category: ${ins.catMeans.map(c => `${c.cat} ${f1(c.mean)}`).join("  ·  ")}.` : null,
+  ].filter(Boolean);
+
+  const chartBlock = d.chartPng ? [
+    p([r("Exhibit 1  ·  Score by innovation type, three assessments (0–10)", { size: 8.5, bold: true, color: MUTED, caps: true, spacing: 15 })], { before: 12, after: 4, keepNext: true }),
+    p([new ImageRun({ type: "png", data: d.chartPng, transformation: { width: 600, height: 276 } })], { align: AlignmentType.CENTER, after: 0, line: 1 }),
+  ] : null;
+
+  const profileSection = [
+    ...sectionHead("sec_profile", "Section 2", "Innovation Profile", `How ${company} scores on each of the ten innovation types, according to the team and two independent AI assessments using the same ${d.NQ}-question instrument.`),
+    keyPoints(profilePoints),
+    spacer(8),
+    profileTable,
+    note(`Type scores run 0–10 and sum to the Total Innovation Score. Position uses the three-source average: Differentiator ≥ ${d.STRONG_THRESHOLD}.0, Developing 5.0–6.9, Opportunity below 5.0.`, { after: 0 }),
+  ];
+
+  // ---------- 3. TRIANGULATION ----------
+  const TW = [2600, 950, 1150, 1150, CW - (2600 + 950 + 1150 + 1150)];
+  const patternTable = (title, desc, color, items, noteFn) => keep([
+    h3(title, color, { before: 12 }),
+    note(desc, { keepNext: true }),
+    table([
+      row([th("Innovation type", TW[0]), th("Team", TW[1], AlignmentType.RIGHT), th(a1, TW[2], AlignmentType.RIGHT), th(a2, TW[3], AlignmentType.RIGHT), th("Observation", TW[4])], { header: true }),
+      ...(items.length ? items.map(it => row([
+        td(it.type, TW[0], { bold: true }), num(it.team, TW[1], TEAM), num(it.ai1, TW[2], AI1), num(it.ai2, TW[3], AI2),
+        td(noteFn ? noteFn(it) : "All three within 1.5 points", TW[4], { size: 9, color: SLATE }),
+      ])) : [row([cell([p([r("None.", { size: 9, italic: true, color: MUTED })], { after: 0 })], { w: CW, span: 5, bottom: line() })])]),
+    ], TW),
+  ]);
+  const QW = [700, CW - 700 - 3 * 760, 760, 760, 760];
+  const qHeader = () => row([th("Code", QW[0]), th("Question and AI evidence", QW[1]), th("Team", QW[2], AlignmentType.RIGHT), th("AI 1", QW[3], AlignmentType.RIGHT), th("AI 2", QW[4], AlignmentType.RIGHT)], { header: true });
+  // kn = keep this row with the next one (keeps a whole type's table on one page when it fits)
+  const qRow = (g, noteTxt, small, kn) => {
+    const sc = (v, w, color) => cell([p([r(typeof v === "number" ? String(v) : "—", { size: 9.5, bold: true, color })], { after: 0, align: AlignmentType.RIGHT, keepNext: kn })], { w, bottom: line(), mt: 70, mb: 70 });
+    return row([
+      cell([p([r(g.code, { size: small ? 8.5 : 9, bold: true })], { after: 0, keepNext: kn })], { w: QW[0], bottom: line(), mt: 70, mb: 70 }),
+      cell([
+        p([r(g.text, { size: small ? 9 : 9.5 })], { after: 1, keepNext: kn }),
+        ...(noteTxt ? [p([r(noteTxt, { size: 8.5, color: MUTED, italic: true })], { after: 1, keepNext: kn })] : []),
+        ...(g.ev1 ? [p([r(`${a1}: `, { size: 8, bold: true, color: AI1 }), r(g.ev1, { size: 8, color: SLATE })], { after: 1, keepNext: kn })] : []),
+        ...(g.ev2 ? [p([r(`${a2}: `, { size: 8, bold: true, color: AI2 }), r(g.ev2, { size: 8, color: SLATE })], { after: 0, keepNext: kn })] : []),
+      ], { w: QW[1], bottom: line(), mt: 70, mb: 70 }),
+      sc(g.team, QW[2], TEAM), sc(g.ai1, QW[3], AI1), sc(g.ai2, QW[4], AI2),
+    ]);
+  };
+  const qGapTeam = [...d.questionGaps].filter(g => Math.abs(g.teamVsAI) >= 1.5).sort((x, y) => Math.abs(y.teamVsAI) - Math.abs(x.teamVsAI)).slice(0, 6);
+  const qGapAI = [...d.questionGaps].filter(g => g.aiSpread >= 2).sort((x, y) => y.aiSpread - x.aiSpread).slice(0, 4);
+  const qBlock = (title, desc, rows, noteFn) => [
+    h3(title, NAVY, { before: 16 }),
+    note(desc, { keepNext: true }),
+    rows.length ? table([qHeader(), ...rows.map(g => qRow(g, noteFn(g)))], QW) : note("None at this threshold.", { italic: true }),
+  ];
+  const triPoints = [
+    `${ins.consensus.length} of 10 types show three-way consensus (all scores within 1.5 points).`,
+    ins.biggestPerception ? `Largest team-versus-AI gap: ${ins.biggestPerception.type} — the team scores it ${Math.abs(ins.biggestPerception.teamVsAI).toFixed(1)} points ${ins.biggestPerception.teamVsAI > 0 ? "higher" : "lower"} than the AI average.` : null,
+    ins.biggestAISplit ? `The AIs disagree most on ${ins.biggestAISplit.type} (${ins.biggestAISplit.aiSpread.toFixed(1)}-point spread), a sign the framework is ambiguous here or the models drew on different information.` : null,
+    d.questionGaps.length ? `At question level, all three sources gave the identical answer on ${ins.qIdentical} of ${d.questionGaps.length} questions.` : null,
+  ].filter(Boolean);
+  const consensusItems = [...ins.consensus].sort((x, y) => y.team - x.team).slice(0, 4);
+  const teamVsAIs = [...d.triangulation].sort((x, y) => Math.abs(y.teamVsAI) - Math.abs(x.teamVsAI)).slice(0, 3);
+  const aisDisagree = [...d.triangulation].sort((x, y) => y.aiSpread - x.aiSpread).slice(0, 3);
+  const perspectives = keep([
+    h3("Independent AI perspectives", NAVY, { before: 16 }),
+    table([
+      row([td(a1, 1900, { bold: true, color: AI1 }), td(d.ai1Parsed.summary || "(no summary paragraph found)", CW - 1900)]),
+      row([td(a2, 1900, { bold: true, color: AI2 }), td(d.ai2Parsed.summary || "(no summary paragraph found)", CW - 1900)]),
+    ], [1900, CW - 1900]),
+  ]);
+  const triSection = [
+    ...sectionHead("sec_tri", "Section 3", "Triangulation", "Three independent views of the same company. Agreement signals a robust finding; disagreement shows where the evidence is thin or the framework is open to interpretation."),
+    keyPoints(triPoints),
+    ...(chartBlock || []),
+    ...(d.triangulation.length ? [
+      patternTable("Consensus", "Types where all three assessments fall within 1.5 points — the most robust findings.", "047857", consensusItems, null),
+      patternTable("Team versus AIs", "Types where the team's view departs most from the AI average.", TEAM, teamVsAIs, c => `Team ${c.teamVsAI > 0 ? "higher" : "lower"} by ${Math.abs(c.teamVsAI).toFixed(1)}`),
+      patternTable("AIs disagree", `Types where ${a1} and ${a2} are furthest apart.`, AI2, aisDisagree, c => `AI spread ${c.aiSpread.toFixed(1)}`),
+      ...qBlock("Question-level drivers: team versus AIs", "Questions where the team's 0–3 answer is at least 1.5 points from the AI average.", qGapTeam, g => `Team ${g.teamVsAI > 0 ? "higher" : "lower"} than the AI average by ${Math.abs(g.teamVsAI).toFixed(1)}`),
+      ...qBlock("Question-level drivers: AIs disagree", "Questions where the two AIs are at least 2 points apart.", qGapAI, g => `AI spread ${g.aiSpread}`),
+      perspectives,
+    ] : [note("Triangulation requires complete scoring from the team and both AIs.")]),
+  ];
+
+  // ---------- 4. EVIDENCE QUALITY ----------
+  const vq = ins.vq;
+  const evPoints = [
+    `${a1} cited a linked source for ${ins.linked1} of 10 types; ${a2} for ${ins.linked2} of 10.`,
+    ins.unsourcedHigh.length ? `Scores of 2–3 lack a linked source in ${ins.listJoin(ins.unsourcedHigh)}. Treat those AI scores with caution.` : "Every AI score of 2–3 is backed by a linked source for its type.",
+    vq ? `Source check on ${vq.code}: ${a1} — ${ins.verdictLabel(d.verification.ai1.verdict).toLowerCase()}; ${a2} — ${ins.verdictLabel(d.verification.ai2.verdict).toLowerCase()}.` : "The source check was not completed.",
+    ins.declaredAny ? d.PRIVATE_CO_CAVEAT : null,
+  ].filter(Boolean);
+  const VW = [2000, CW - 2000 - 1900, 1900];
+  const verifyRow = (which, parsed, name, color) => {
+    const v = d.verification[which];
+    const src = vq && v.src !== null && v.src !== undefined ? (parsed.sources[vq.type] || [])[v.src] : null;
+    return row([
+      td([p([r(name, { size: 9.5, bold: true, color })], { after: 1 }), p([r(`scored ${vq ? vq[which] : "—"} of 3`, { size: 8.5, color: MUTED })], { after: 0 })], VW[0]),
+      td([
+        p(src ? [src.url ? extLink(src.title || src.url, src.url, 9.5) : r(src.title, { size: 9.5 })] : [r("(no source selected)", { size: 9.5, italic: true, color: MUTED })], { after: v.note ? 2 : 0 }),
+        ...(v.note ? [p([r(`“${v.note}”`, { size: 9, color: SLATE, italic: true })], { after: 0 })] : []),
+      ], VW[1]),
+      td(ins.verdictLabel(v.verdict), VW[2], { bold: true, size: 9 }),
+    ]);
+  };
+  const CVW = [3000, (CW - 3000) / 2, (CW - 3000) / 2];
+  const coverageRows = d.TYPES_ORDER.map(t => {
+    const sc = (parsed, q) => {
+      const st = d.sourceStatus(parsed, t), hi = d.highScoreUnsourced(parsed, q, t);
+      return td([p([r(d.SOURCE_STATUS[st].label, { size: 9, bold: true, color: STATUS[st] })], { after: 0 }), ...(hi ? [p([r("2–3 scores unsourced", { size: 8, color: "B91C1C" })], { after: 0 })] : [])], CVW[1]);
+    };
+    return row([td(t, CVW[0], { bold: true }), sc(d.ai1Parsed, d.ai1Q), sc(d.ai2Parsed, d.ai2Q)]);
+  });
+  const evSection = [
+    ...sectionHead("sec_evidence", "Section 4", "Evidence Quality", "How well the AI assessments are supported by verifiable sources, and what the team found when it checked them."),
+    keyPoints(evPoints),
+    keep([
+      h3("Source verification", NAVY, { before: 12 }),
+      ...(vq ? [
+        note(`The team opened one cited source from each AI on a question where the AIs disagree: ${vq.code} — ${vq.text} (team score ${vq.team} of 3).`, { keepNext: true }),
+        table([row([th("AI", VW[0]), th("Source checked and what it said", VW[1]), th("Verdict", VW[2])], { header: true }), verifyRow("ai1", d.ai1Parsed, a1, AI1), verifyRow("ai2", d.ai2Parsed, a2, AI2)], VW),
+      ] : [note("Not completed.", { italic: true })]),
+    ]),
+    keep([
+      h3("Source coverage by innovation type", NAVY, { before: 16 }),
+      table([row([th("Innovation type", CVW[0]), th(a1, CVW[1]), th(a2, CVW[2])], { header: true }), ...coverageRows], CVW),
+      note("Full citations with links are listed in Appendix B.", { after: 0 }),
+    ]),
+  ];
+
+  // ---------- APPENDIX A ----------
+  const appA = [
+    ...sectionHead("sec_appA", "Appendix A", "Question-Level Scoring", `Every diagnostic question as answered by the team, ${a1}, and ${a2} on the shared rubric: 0 None, 1 Low, 2 Medium, 3 High, judged relative to direct competitors and industry norms.`),
+    ...d.TYPES_ORDER.map(t => {
+      const cat = d.TYPE_INFO[t].category, cc = CAT[cat];
+      const tq = d.QUESTIONS.filter(q => q.type === t);
+      const rows = tq.map((q, i) => {
+        const key = `${t}:${i}`;
+        return qRow({ code: d.questionCode(t, i), text: q.text, team: d.questionScores[key], ai1: d.ai1Q[key], ai2: d.ai2Q[key], ev1: d.ai1Parsed.evidence[key], ev2: d.ai2Parsed.evidence[key] }, null, true, i < tq.length - 1);
+      });
+      return ([
+        p([r(t, { size: 12, bold: true, color: cc }), r(`   ${cat}  ·  Team ${fmt(d.teamTypeFinal[t])}  ·  ${a1} ${fmt(d.ai1Scores[t])}  ·  ${a2} ${fmt(d.ai2Scores[t])}`, { size: 8.5, color: MUTED })], { before: 14, after: 4, keepNext: true, border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: cc, space: 2 } } }),
+        table([qHeader(), ...rows], QW),
+        ...(d.typeEvidence[t] ? [p([r("Team evidence: ", { size: 8.5, bold: true, color: cc }), r(d.typeEvidence[t], { size: 8.5, italic: true, color: SLATE })], { before: 3, after: 0 })] : []),
+      ]);
+    }).flat(),
+  ];
+
+  // ---------- APPENDIX B ----------
+  const BW = [2400, CW - 2400];
+  const citations = (parsed, name, color, first) => [
+    p([r(`${name}  ·  Citations`, { size: 13, bold: true, color }), r(`     ${d.TYPES_ORDER.filter(t => d.sourceStatus(parsed, t) === "linked").length} of 10 types with a linked source`, { size: 9, color: MUTED })], { before: first ? 10 : 0, pageBreak: !first, after: 4, keepNext: true, border: { bottom: { style: BorderStyle.SINGLE, size: 12, color, space: 2 } } }),
+    table(d.TYPES_ORDER.map(t => {
+      const st = d.sourceStatus(parsed, t);
+      const list = parsed.sources[t] || [];
+      const items = list.map(src => src.url
+        ? [p([extLink(src.title || src.url, src.url, 9)], { after: 0 }), p([r(src.url, { size: 7.5, color: MUTED })], { after: 3 })]
+        : [p([r(src.title, { size: 9 }), r("  (no link)", { size: 9, italic: true, color: "B45309" })], { after: 3 })]).flat();
+      if (st === "declared") items.push(p([r("No public source: ", { size: 9, italic: true, color: "B45309" }), r(parsed.noSource[t], { size: 9 })], { after: 0 }));
+      if (st === "missing") items.push(p([r("No source given.", { size: 9, italic: true, color: "B91C1C" })], { after: 0 }));
+      return row([td([p([r(t, { size: 9.5, bold: true })], { after: 1 }), p([r(d.SOURCE_STATUS[st].label, { size: 8, bold: true, color: STATUS[st] })], { after: 0 })], BW[0]), td(items, BW[1])]);
+    }), BW),
+  ];
+  const appB = [
+    ...sectionHead("sec_appB", "Appendix B", "AI Citations", `Sources each AI cited for each innovation type. Links open the cited page.${ins.declaredAny ? " " + d.PRIVATE_CO_CAVEAT : ""}`),
+    ...citations(d.ai1Parsed, a1, AI1, true),
+    ...citations(d.ai2Parsed, a2, AI2, false),
+  ];
+
+  // ---------- APPENDIX C ----------
+  const method = (title, body) => keep([h3(title, NAVY, { before: 12 }), p([r(body, { size: 10 })], { after: 4, line: 1.2 })]);
+  const appC = [
+    ...sectionHead("sec_appC", "Appendix C", "Methodology", "How this assessment was produced."),
+    method("Framework", "Doblin's Ten Types of Innovation (Keeley, Pikkel, Quinn & Walters, 2013) groups innovation into three categories: Configuration (Profit Model, Network, Structure, Process), Offering (Product Performance, Product System), and Experience (Service, Channel, Brand, Customer Engagement). Keeley's research found that companies innovating on five or more types at once markedly outperform single-type innovators."),
+    method("Scoring instrument", `All three sources answered the same ${d.NQ} diagnostic questions on a 0–3 scale (0 None, 1 Low, 2 Medium, 3 High), judged relative to direct competitors and industry norms. Answers are weighted so that each type scores 0–10 regardless of its number of questions; the ten type scores sum to a Total Innovation Score out of 100. A type counts as strong at ${d.STRONG_THRESHOLD}.0 or above.`),
+    method("Triangulation", `The team's assessment was compared with two independent AI assessments (${a1} and ${a2}) that received the same questions and rubric. Consensus means all three scores fall within 1.5 points; question-level gaps are reported where the team differs from the AI average by 1.5 points or more, or the AIs differ from each other by 2 points or more.`),
+    method("Sources and verification", "Each AI was required to cite one to three sources per innovation type, to support every score of 2 or 3 with a source, and to state when no reliable public source exists. The team then opened one cited source from each AI on a disputed question and recorded whether it supported the score."),
+    method("Limitations", "The assessment relies on public information and the judgment of the team and two AI models at the date shown, gathered in a time-boxed workshop. AI models can misstate facts or cite sources inaccurately; only a sample of citations was verified. Private companies disclose less, so some scores carry lower confidence. Recommendations are directional and would require further validation before investment."),
+  ];
+
+  // ---------- BACK PAGE ----------
+  const back = [
+    table([row([cell([p("")], { w: CW })], { height: 8400, rule: HeightRule.EXACT })], [CW]),
+    table([row([cell([
+      p([r(preparedBy, { font: SERIF, size: 20, color: "FFFFFF" })], { after: 4 }),
+      p([r(`Innovation Portfolio Assessment  ·  ${company}  ·  ${d.dateStr}`, { size: 10, color: PALE })], { after: 10 }),
+      p([r("")], { after: 8, border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: GOLD, space: 1 } }, indent: { right: CW - 1300 } }),
+      p([r("Framework: Keeley, L., Pikkel, R., Quinn, B., & Walters, H. (2013). ", { size: 8.5, color: PALE }), r("Ten Types of Innovation: The Discipline of Building Breakthroughs.", { size: 8.5, color: PALE, italic: true }), r(" Hoboken, NJ: Wiley.", { size: 8.5, color: PALE })], { after: 6, line: 1.2 }),
+      p([r("This report was produced in a structured innovation workshop using public information and AI-assisted analysis. It is intended for discussion and is not investment advice.", { size: 8.5, color: PALE })], { after: 8, line: 1.2 }),
+      p([r(`Innovation Workshop ${d.APP_VERSION}`, { size: 8, color: "8FA0B8" })], { after: 0 }),
+    ], { w: CW, fill: NAVY, ml: 560, mr: 560, mt: 480, mb: 480 })])], [CW]),
+  ];
+
+  // ---------- header / footer ----------
+  const header = new Header({ children: [p([r(`${company}  ·  Innovation Portfolio Assessment`, { size: 8, color: MUTED })], { align: AlignmentType.RIGHT, after: 0, border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: RULE, space: 4 } } })] });
+  const footer = new Footer({ children: [new Paragraph({
+    tabStops: [{ type: TabStopType.RIGHT, position: CW }],
+    border: { top: { style: BorderStyle.SINGLE, size: 4, color: RULE, space: 4 } },
+    children: [r(`${preparedBy}  ·  Confidential`, { size: 8, color: MUTED }), new TextRun({ children: ["\tPage ", PageNumber.CURRENT], font: FONT, size: 16, color: MUTED })],
+  })] });
+  const blankHF = { default: new Header({ children: [new Paragraph({ children: [] })] }) };
+  const blankF = { default: new Footer({ children: [new Paragraph({ children: [] })] }) };
+  const pageProps = { page: { size: { width: PAGE_W, height: 15840 }, margin: { top: 1296, bottom: 1224, left: MARGIN, right: MARGIN, header: 576, footer: 576 } } };
+
+  return new Document({
+    creator: preparedBy,
+    title: `${company} — Innovation Portfolio Assessment`,
+    description: "Ten Types of Innovation diagnostic and strategic recommendations",
+    styles: {
+      default: { document: { run: { font: FONT, size: 21, color: INK } } },
+      paragraphStyles: [
+        { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true, run: { font: SERIF, size: 48, color: NAVY, bold: false }, paragraph: { spacing: { before: 0, after: 120 }, keepNext: true, outlineLevel: 0 } },
+      ],
+    },
+    sections: [
+      { properties: pageProps, headers: blankHF, footers: blankF, children: cover },
+      { properties: { ...pageProps, page: { ...pageProps.page, pageNumbers: { start: 1 } } }, headers: { default: header }, footers: { default: footer },
+        children: [...contents, ...execSummary, ...recSection, ...profileSection, ...triSection, ...evSection, ...appA, ...appB, ...appC] },
+      { properties: pageProps, headers: blankHF, footers: blankF, children: back },
+    ],
+  });
+};
 
 // ============================================================
 // MAIN COMPONENT
@@ -545,6 +1158,7 @@ function InnovationWorkshop() {
   const [ai2Edits, setAi2Edits] = useState({});
 
   const [tacticRecs, setTacticRecs] = useState([]);
+  const [verification, setVerification] = useState(initialVerification());
 
   const [copied1, setCopied1] = useState(false);
   const [copied2, setCopied2] = useState(false);
@@ -571,6 +1185,7 @@ function InnovationWorkshop() {
           if (s.ai2Raw) setAi2Raw(s.ai2Raw);
           if (s.ai2Edits) setAi2Edits(s.ai2Edits);
           if (s.tacticRecs) setTacticRecs(s.tacticRecs.map(normalizeTactic));
+          if (s.verification) setVerification({ ...initialVerification(), ...s.verification });
           if (typeof s.phase === "number") setPhase(s.phase);
         }
       } catch (e) {}
@@ -587,12 +1202,12 @@ function InnovationWorkshop() {
           phase, companyName, companyContext, teamName,
           questionScores, typeEvidence,
           ai1Name, ai1Raw, ai1Edits, ai2Name, ai2Raw, ai2Edits,
-          tacticRecs,
+          tacticRecs, verification,
         }));
       } catch (e) {}
     })();
   }, [phase, companyName, companyContext, teamName, questionScores, typeEvidence,
-      ai1Name, ai1Raw, ai1Edits, ai2Name, ai2Raw, ai2Edits, tacticRecs, loaded]);
+      ai1Name, ai1Raw, ai1Edits, ai2Name, ai2Raw, ai2Edits, tacticRecs, verification, loaded]);
 
   // Parse AI responses question-by-question, apply manual fixes, roll up to type scores
   const ai1Parsed = useMemo(() => parseAIResponse(ai1Raw), [ai1Raw]);
@@ -697,251 +1312,351 @@ function InnovationWorkshop() {
     setAi1Name(""); setAi1Raw(""); setAi1Edits({});
     setAi2Name(""); setAi2Raw(""); setAi2Edits({});
     setTacticRecs([]);
+    setVerification(initialVerification());
     try { await window.storage.delete(STORAGE_KEY); } catch (e) {}
   };
 
   // ============================================================
-  // EXPORT — Word doc (HTML+MSO) + plain-text fallback
+  // REPORT INSIGHTS — plain-language findings generated from the scores
+  // (shared by the Word report and the plain-text export)
+  // ============================================================
+
+  const buildInsights = () => {
+    const num = (v) => typeof v === "number";
+    const f1 = (v) => num(v) ? v.toFixed(1) : "—";
+    const listJoin = (arr) => arr.length <= 1 ? arr.join("") : arr.length === 2 ? `${arr[0]} and ${arr[1]}` : `${arr.slice(0, -1).join(", ")}, and ${arr[arr.length - 1]}`;
+    const company = companyName || "The company";
+    const means = {};
+    TYPES_ORDER.forEach(t => {
+      const vals = [teamTypeFinal[t], ai1Scores[t], ai2Scores[t]].filter(num);
+      means[t] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    });
+    const ranked = TYPES_ORDER.filter(t => num(means[t])).sort((a, b) => means[b] - means[a]);
+    const tier = (m) => !num(m) ? "—" : m >= STRONG_THRESHOLD ? "Differentiator" : m >= 5 ? "Developing" : "Opportunity";
+    const strengths = ranked.filter(t => means[t] >= STRONG_THRESHOLD);
+    const topTypes = strengths.length ? strengths.slice(0, 3) : ranked.slice(0, 2);
+    const gaps = [...ranked].reverse().filter(t => means[t] < 5).slice(0, 3);
+    const bottomTypes = gaps.length ? gaps : [...ranked].reverse().slice(0, 2);
+    const catMeans = CATEGORIES.map(cat => {
+      const ts = TYPES_ORDER.filter(t => TYPE_INFO[t].category === cat && num(means[t]));
+      return { cat, mean: ts.length ? ts.reduce((a, t) => a + means[t], 0) / ts.length : null };
+    }).filter(c => num(c.mean)).sort((a, b) => b.mean - a.mean);
+    const strongTeam = countStrong(teamTypeFinal), strongA1 = countStrong(ai1Scores), strongA2 = countStrong(ai2Scores);
+    const maxStrong = Math.max(strongTeam, strongA1, strongA2);
+    const biggestPerception = [...triangulation].sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI))[0];
+    const biggestAISplit = [...triangulation].sort((a, b) => b.aiSpread - a.aiSpread)[0];
+    const consensus = triangulation.filter(i => i.spread <= 1.5);
+    const linked1 = TYPES_ORDER.filter(t => sourceStatus(ai1Parsed, t) === "linked").length;
+    const linked2 = TYPES_ORDER.filter(t => sourceStatus(ai2Parsed, t) === "linked").length;
+    const declaredAny = [ai1Parsed, ai2Parsed].some(pp => TYPES_ORDER.some(t => sourceStatus(pp, t) === "declared"));
+    const unsourcedHigh = [...new Set([
+      ...TYPES_ORDER.filter(t => highScoreUnsourced(ai1Parsed, ai1Q, t)),
+      ...TYPES_ORDER.filter(t => highScoreUnsourced(ai2Parsed, ai2Q, t)),
+    ])];
+    const vq = questionGaps.find(x => x.key === verification.qKey);
+    const verdictLabel = (k) => (VERDICTS.find(v => v.key === k) || {}).label || "not recorded";
+    const recCats = [...new Set(tacticRecs.map(r => TYPE_INFO[r.type].category))];
+    const doublingDown = tacticRecs.filter(r => num(teamTypeFinal[r.type]) && teamTypeFinal[r.type] >= STRONG_THRESHOLD);
+    const qIdentical = questionGaps.filter(g => g.team === g.ai1 && g.ai1 === g.ai2).length;
+    const scopeTxt = companyContext.trim() ? ` (${companyContext.trim()})` : "";
+    const a1 = ai1Name || "AI 1", a2 = ai2Name || "AI 2";
+
+    const headline = `${company}${scopeTxt} scores ${f1(teamTotal)} out of 100 on the team's assessment, against ${f1(ai1Total)} from ${a1} and ${f1(ai2Total)} from ${a2}. By the team's scoring it is a strong innovator on ${strongTeam} of the ten types — ${strongTeam >= 5 ? "at or above" : "below"} the five-type threshold that Keeley's research associates with breakthrough performance${maxStrong >= 5 && strongTeam < 5 ? ", although at least one AI sees five or more strong types" : ""}.`;
+
+    const findings = [];
+    if (topTypes.length) findings.push({ title: strengths.length ? "Where the company already differentiates" : "Relative strengths", text: `${listJoin(topTypes)} ${topTypes.length === 1 ? "is" : "are"} the strongest ${topTypes.length === 1 ? "type" : "types"} across all three assessments (average ${topTypes.map(t => f1(means[t])).join(", ")} out of 10)${strengths.length ? "" : ", although none reaches the strong threshold of " + STRONG_THRESHOLD + ".0"}.` });
+    if (bottomTypes.length) findings.push({ title: "Where the opportunities are", text: `${listJoin(bottomTypes)} show${bottomTypes.length === 1 ? "s" : ""} the least differentiation (average ${bottomTypes.map(t => f1(means[t])).join(", ")}). These are the types where competitors are least likely to expect a move.` });
+    if (catMeans.length >= 2) findings.push({ title: "Category balance", text: `Innovation is concentrated in ${catMeans[0].cat} (average ${f1(catMeans[0].mean)}) and thinnest in ${catMeans[catMeans.length - 1].cat} (average ${f1(catMeans[catMeans.length - 1].mean)}).` });
+    if (biggestPerception && Math.abs(biggestPerception.teamVsAI) >= 1.5) findings.push({ title: "Largest perception gap", text: `The team rates ${biggestPerception.type} ${Math.abs(biggestPerception.teamVsAI).toFixed(1)} points ${biggestPerception.teamVsAI > 0 ? "higher" : "lower"} than the two AIs on average (team ${f1(biggestPerception.team)}, ${a1} ${f1(biggestPerception.ai1)}, ${a2} ${f1(biggestPerception.ai2)}). Either the team has information the public record lacks, or it is ${biggestPerception.teamVsAI > 0 ? "overrating" : "underrating"} this type.` });
+    findings.push({ title: "Confidence in the evidence", text: `${a1} cited linked sources for ${linked1} of 10 types and ${a2} for ${linked2}.${vq ? ` When the team opened one cited source from each AI (${vq.code}), the verdicts were: ${a1} — ${verdictLabel(verification.ai1.verdict).toLowerCase()}; ${a2} — ${verdictLabel(verification.ai2.verdict).toLowerCase()}.` : " The source check was not completed."}` });
+
+    return {
+      means, ranked, tier, strengths, topTypes, bottomTypes, catMeans, strongTeam, strongA1, strongA2,
+      biggestPerception, biggestAISplit, consensus, linked1, linked2, declaredAny, unsourcedHigh, vq,
+      verdictLabel, recCats, doublingDown, qIdentical, headline, findings, a1, a2, f1, listJoin,
+    };
+  };
+
+  // ============================================================
+  // EXPORT — consulting-style Word report (HTML+MSO) + plain-text fallback
   // ============================================================
 
   const buildWordHTML = () => {
-    const dateStr = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
-    const catColorHex = (cat) => ({ Configuration: "#7C3AED", Offering: "#059669", Experience: "#EA580C" })[cat];
-    const teamColorHex = "#EA580C";
-    const ai1ColorHex = "#059669";
-    const ai2ColorHex = "#7C3AED";
+    const ins = buildInsights();
+    const { f1, a1, a2 } = ins;
+    const E = escapeHTML;
+    const dateStr = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    const company = companyName || "The Company";
+    const scope = companyContext.trim();
+    const preparedBy = teamName ? teamName : "Workshop Team";
+
+    // Palette — navy/slate consulting look; data colors match the app
+    const NAVY = "#0B1F3A", INK = "#1F2937", SLATE = "#475569", MUTED = "#64748B", RULE = "#D9DEE5", TINT = "#F3F5F8", ACCENT = "#B8860B";
+    const catColorHex = (cat) => ({ Configuration: "#6D28D9", Offering: "#047857", Experience: "#C2410C" })[cat];
+    const teamColorHex = "#C2410C", ai1ColorHex = "#0F766E", ai2ColorHex = "#6D28D9";
     const fmt = (v) => v !== null && v !== undefined && !isNaN(v) ? v.toFixed(2) : "—";
-    const fmt1 = (v) => v !== null && v !== undefined && !isNaN(v) ? v.toFixed(1) : "—";
+    const tierHex = { Differentiator: "#047857", Developing: "#B45309", Opportunity: "#B91C1C", "—": MUTED };
 
-    const scoreRows = TYPES_ORDER.map(t => {
-      const team = teamTypeScores[t];
-      const teamStr = team.scored === team.total ? team.score.toFixed(2) : "—";
-      const a1 = typeof ai1Scores[t] === "number" ? ai1Scores[t].toFixed(2) : "—";
-      const a2 = typeof ai2Scores[t] === "number" ? ai2Scores[t].toFixed(2) : "—";
-      const cat = TYPE_INFO[t].category;
-      return `<tr>
-        <td><strong>${escapeHTML(t)}</strong></td>
-        <td><span style="color:${catColorHex(cat)};font-size:9pt;font-weight:600;">${cat}</span></td>
-        <td class="num">${teamStr}</td>
-        <td class="num">${a1}</td>
-        <td class="num">${a2}</td>
-      </tr>`;
-    }).join("\n");
+    // Layout helpers
+    const PB = `<p class="pb" style="page-break-before:always;mso-break-type:page-break;margin:0;line-height:1pt;font-size:1pt;">&nbsp;</p>`;
+    // Keep a block on one page: a single-row table whose row may not split across pages
+    const keep = (inner, mt = 0) => `<table class="keep" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:${mt}pt 0 0 0;"><tr style="page-break-inside:avoid;"><td style="padding:0;border:none;">${inner}</td></tr></table>`;
+    const kicker = (t) => `<p class="kicker">${t}</p>`;
+    const sectionHead = (id, num, title, sub) => `
+<a name="${id}"></a>
+${kicker(num)}
+<h1 id="${id}">${title}</h1>
+${sub ? `<p class="lede">${sub}</p>` : ""}`;
+    const keyPoints = (points, label = "Key points") => keep(`
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:6pt 0 12pt;">
+  <tr style="page-break-inside:avoid;"><td style="background:${TINT};border-left:3pt solid ${NAVY};padding:9pt 14pt;">
+    <p style="margin:0 0 4pt;font-size:8.5pt;letter-spacing:1.5pt;text-transform:uppercase;color:${NAVY};font-weight:bold;">${label}</p>
+    ${points.map(p => `<p style="margin:3pt 0;font-size:10pt;color:${INK};line-height:1.35;">&#9656;&nbsp; ${p}</p>`).join("")}
+  </td></tr>
+</table>`);
+    const chip = (text, color) => `<span style="font-size:7.5pt;font-weight:bold;letter-spacing:0.5pt;text-transform:uppercase;color:${color};border:0.75pt solid ${color};padding:0 3pt;">${E(text)}</span>`;
 
-    const recCats = [...new Set(tacticRecs.map(r => TYPE_INFO[r.type].category))];
-    const tacticBlocks = tacticRecs.length ? tacticRecs.map((r, i) => {
+    // ---------- Score tiles ----------
+    const tile = (label, total, strong, color, extra) => `
+      <td style="width:33%;border-top:2.25pt solid ${color};background:${TINT};padding:9pt 12pt;vertical-align:top;">
+        <p style="margin:0;font-size:8pt;letter-spacing:1pt;text-transform:uppercase;color:${MUTED};font-weight:bold;">${E(label)}</p>
+        <p style="margin:2pt 0 0;font-family:Georgia,serif;font-size:24pt;color:${color};line-height:1.05;">${f1(total)}<span style="font-size:10pt;color:${MUTED};font-family:Calibri,Arial,sans-serif;"> / 100</span></p>
+        <p style="margin:3pt 0 0;font-size:8.5pt;color:${SLATE};">Strong types: <strong>${strong}</strong> of 10${extra ? ` &middot; ${extra}` : ""}</p>
+      </td>`;
+    const tileRow = `<table cellpadding="0" cellspacing="6" style="width:100%;border-collapse:separate;margin:4pt 0 10pt;"><tr style="page-break-inside:avoid;">
+      ${tile("Team assessment", teamTotal, ins.strongTeam, teamColorHex)}
+      ${tile(a1, ai1Total, ins.strongA1, ai1ColorHex, `${ins.linked1}/10 sourced`)}
+      ${tile(a2, ai2Total, ins.strongA2, ai2ColorHex, `${ins.linked2}/10 sourced`)}
+    </tr></table>`;
+
+    // ---------- Recommendations ----------
+    const recSummaryRows = tacticRecs.map((r, i) => {
       const cat = TYPE_INFO[r.type].category;
-      const cc = catColorHex(cat);
+      return `<tr style="page-break-inside:avoid;">
+        <td style="width:30pt;vertical-align:top;padding:7pt 6pt 7pt 0;border-bottom:0.5pt solid ${RULE};"><p style="margin:0;font-family:Georgia,serif;font-size:20pt;color:${NAVY};line-height:1;">${i + 1}</p></td>
+        <td style="vertical-align:top;padding:7pt 0;border-bottom:0.5pt solid ${RULE};">
+          <p style="margin:0;font-size:12pt;font-weight:bold;color:${NAVY};">${E(r.name)} <span style="font-size:8.5pt;font-weight:normal;color:${catColorHex(cat)};">&nbsp;${E(r.type)} &middot; ${cat}</span></p>
+          <p style="margin:2pt 0 0;font-size:9.5pt;color:${INK};"><strong>Why:</strong> ${E((r.gap || "").trim() || "—")}</p>
+          <p style="margin:1pt 0 0;font-size:9.5pt;color:${INK};"><strong>What it takes:</strong> ${E((r.adoption || "").trim() || "—")}</p>
+        </td></tr>`;
+    }).join("");
+    const impactLine = tacticRecs.length
+      ? `If these moves succeed, ${E(company)} would have up to <strong>${projectedStrong}</strong> strong innovation types (from ${ins.strongTeam} today)${projectedStrong >= 5 ? ", reaching the five-type threshold" : `, still ${5 - projectedStrong} short of the five-type threshold`}. The portfolio spans ${ins.recCats.length} of 3 categories (${ins.recCats.join(", ")}).`
+      : "";
+    const recBox = keep(`
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:8pt 0 0;">
+  <tr style="page-break-inside:avoid;"><td style="border:1.5pt solid ${NAVY};padding:10pt 14pt;">
+    <p style="margin:0;font-size:8.5pt;letter-spacing:1.5pt;text-transform:uppercase;color:${ACCENT};font-weight:bold;">Our recommendations</p>
+    <p style="margin:2pt 0 4pt;font-family:Georgia,serif;font-size:15pt;color:${NAVY};">${tacticRecs.length ? `${tacticRecs.length} moves for ${E(company)}` : "No recommendations recorded"}</p>
+    ${tacticRecs.length ? `<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">${recSummaryRows}</table>
+    <p style="margin:7pt 0 0;font-size:9.5pt;color:${SLATE};">${impactLine}</p>` : ""}
+  </td></tr>
+</table>`);
+
+    const recCard = (r, i) => {
+      const cat = TYPE_INFO[r.type].category, cc = catColorHex(cat);
       const tdef = TACTICS.find(x => x.type === r.type && x.name === r.name);
-      const fieldRows = TACTIC_FIELDS.map(f => `<p style="font-size:10.5pt;color:#334155;margin:3pt 0;"><strong style="color:#0F172A;">${f.label}:</strong> ${escapeHTML((r[f.key] || "").trim() || "(not recorded)")}</p>`).join("");
-      const ts = teamTypeFinal[r.type], s1 = ai1Scores[r.type], s2 = ai2Scores[r.type];
-      return `<div style="border-left:3pt solid ${cc};padding:8pt 14pt;margin:8pt 0;background:#F8FAFC;">
-        <div style="font-size:9pt;color:#64748B;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2pt;">${String(i+1).padStart(2,"0")} · ${escapeHTML(r.type)} · <span style="color:${cc};">${cat}</span> · Team ${fmt(ts)} / ${escapeHTML(ai1Name)} ${fmt(s1)} / ${escapeHTML(ai2Name)} ${fmt(s2)}</div>
-        <div style="font-size:13pt;font-weight:600;color:#0F172A;margin-bottom:2pt;">${escapeHTML(r.name)}</div>
-        ${tdef ? `<div style="font-size:9.5pt;color:#64748B;font-style:italic;margin-bottom:4pt;">${escapeHTML(tdef.desc)}</div>` : ""}
-        ${fieldRows}
-      </div>`;
-    }).join("\n") + `<p style="font-size:9.5pt;color:#64748B;margin-top:6pt;">Categories covered: ${recCats.join(", ") || "—"}${recCats.length === 1 && tacticRecs.length > 1 ? " (single-category portfolio)" : ""}. Projected strong types if adopted (team scoring): ${countStrong(teamTypeFinal)} → ${projectedStrong}.</p>`
-      : `<p style="color:#64748B;font-style:italic;">No tactics recorded.</p>`;
+      const strong = typeof teamTypeFinal[r.type] === "number" && teamTypeFinal[r.type] >= STRONG_THRESHOLD;
+      const field = (label, val) => `<tr style="page-break-inside:avoid;"><td style="width:120pt;vertical-align:top;padding:5pt 8pt 5pt 0;border-top:0.5pt solid ${RULE};"><p style="margin:0;font-size:8.5pt;letter-spacing:0.8pt;text-transform:uppercase;color:${MUTED};font-weight:bold;">${label}</p></td><td style="vertical-align:top;padding:5pt 0;border-top:0.5pt solid ${RULE};"><p style="margin:0;font-size:10pt;color:${INK};line-height:1.35;">${E((val || "").trim() || "(not recorded)")}</p></td></tr>`;
+      return keep(`
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:12pt 0 0;">
+  <tr style="page-break-inside:avoid;"><td style="border-top:2.25pt solid ${cc};padding:8pt 0 0;">
+    <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr>
+      <td style="width:44pt;vertical-align:top;"><p style="margin:0;font-family:Georgia,serif;font-size:30pt;color:${NAVY};line-height:1;">${String(i + 1).padStart(2, "0")}</p></td>
+      <td style="vertical-align:top;">
+        <p style="margin:0;font-size:8.5pt;letter-spacing:1pt;text-transform:uppercase;color:${cc};font-weight:bold;">${E(r.type)} &middot; ${cat}${strong ? ` &nbsp;${chip("Builds on a strength", "#047857")}` : ""}</p>
+        <p style="margin:1pt 0 2pt;font-family:Georgia,serif;font-size:16pt;color:${NAVY};">${E(r.name)}</p>
+        ${tdef ? `<p style="margin:0;font-size:9.5pt;color:${SLATE};font-style:italic;">${E(tdef.desc)}</p>` : ""}
+        <p style="margin:4pt 0 0;font-size:8.5pt;color:${MUTED};">Current ${E(r.type)} score: Team <strong style="color:${teamColorHex};">${fmt(teamTypeFinal[r.type])}</strong> &middot; ${E(a1)} <strong style="color:${ai1ColorHex};">${fmt(ai1Scores[r.type])}</strong> &middot; ${E(a2)} <strong style="color:${ai2ColorHex};">${fmt(ai2Scores[r.type])}</strong></p>
+      </td></tr></table>
+    <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:6pt;">
+      ${field("The opportunity", r.gap)}${field("Supporting evidence", r.evidence)}${field("What adoption requires", r.adoption)}
+    </table>
+  </td></tr>
+</table>`);
+    };
 
-    const qCell = (v, color) => `<td class="num" style="width:34pt;color:${color};font-weight:600;">${typeof v === "number" ? v : "—"}</td>`;
-    const detailedSections = TYPES_ORDER.map(t => {
+    // ---------- Innovation profile ----------
+    const profileRows = TYPES_ORDER.map((t, idx) => {
       const cat = TYPE_INFO[t].category;
-      const cc = catColorHex(cat);
-      const qs = QUESTIONS.filter(q => q.type === t);
-      const qRows = qs.map((q, i) => {
-        const key = `${t}:${i}`;
-        const e1 = ai1Parsed.evidence[key], e2 = ai2Parsed.evidence[key];
-        const evLines = (e1 || e2) ? `<div style="font-size:8.5pt;color:#64748B;margin-top:2pt;">${e1 ? `<span style="color:${ai1ColorHex};font-weight:600;">${escapeHTML(ai1Name)}:</span> ${escapeHTML(e1)}` : ""}${e1 && e2 ? "<br/>" : ""}${e2 ? `<span style="color:${ai2ColorHex};font-weight:600;">${escapeHTML(ai2Name)}:</span> ${escapeHTML(e2)}` : ""}</div>` : "";
-        return `<tr><td style="width:34pt;"><strong>${questionCode(t, i)}</strong></td><td>${escapeHTML(q.text)}${evLines}</td>${qCell(questionScores[key], teamColorHex)}${qCell(ai1Q[key], ai1ColorHex)}${qCell(ai2Q[key], ai2ColorHex)}</tr>`;
-      }).join("\n");
-      const evidenceRow = typeEvidence[t]
-        ? `<p style="font-size:10pt;color:#475569;margin-top:4pt;"><strong style="color:${cc};">Team evidence:</strong> <em>${escapeHTML(typeEvidence[t])}</em></p>`
-        : "";
-      return `<h3 style="color:${cc};">${escapeHTML(t)} <span style="font-size:10pt;color:#94A3B8;font-weight:normal;">· ${cat} · Team ${fmt(teamTypeFinal[t])} · ${escapeHTML(ai1Name)} ${fmt(ai1Scores[t])} · ${escapeHTML(ai2Name)} ${fmt(ai2Scores[t])}</span></h3>
-        <table><tr><td></td><td style="font-size:8.5pt;color:#94A3B8;">Question</td><td class="num" style="font-size:8.5pt;color:${teamColorHex};">Team</td><td class="num" style="font-size:8.5pt;color:${ai1ColorHex};">AI 1</td><td class="num" style="font-size:8.5pt;color:${ai2ColorHex};">AI 2</td></tr>${qRows}</table>
-        ${evidenceRow}`;
-    }).join("\n");
+      const tr = ins.tier(ins.means[t]);
+      const prevCat = idx > 0 ? TYPE_INFO[TYPES_ORDER[idx - 1]].category : null;
+      const catCell = cat !== prevCat ? `<span style="color:${catColorHex(cat)};font-weight:bold;">${cat}</span>` : "";
+      return `<tr style="page-break-inside:avoid;">
+        <td class="c" style="width:78pt;font-size:8.5pt;">${catCell}</td>
+        <td class="c"><strong>${E(t)}</strong></td>
+        <td class="c n" style="color:${teamColorHex};">${fmt(teamTypeFinal[t])}</td>
+        <td class="c n" style="color:${ai1ColorHex};">${fmt(ai1Scores[t])}</td>
+        <td class="c n" style="color:${ai2ColorHex};">${fmt(ai2Scores[t])}</td>
+        <td class="c n"><strong>${f1(ins.means[t])}</strong></td>
+        <td class="c" style="width:70pt;"><span style="font-size:8pt;font-weight:bold;color:${tierHex[tr]};">${tr}</span></td>
+      </tr>`;
+    }).join("");
+    const profileTable = keep(`
+<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:4pt 0 0;">
+  <tr style="page-break-inside:avoid;"><th class="h">Category</th><th class="h">Innovation type</th><th class="h n">Team</th><th class="h n">${E(a1)}</th><th class="h n">${E(a2)}</th><th class="h n">Average</th><th class="h">Position</th></tr>
+  ${profileRows}
+  <tr style="page-break-inside:avoid;"><td class="t" colspan="2"><strong>Total Innovation Score (0–100)</strong></td><td class="t n" style="color:${teamColorHex};"><strong>${f1(teamTotal)}</strong></td><td class="t n" style="color:${ai1ColorHex};"><strong>${f1(ai1Total)}</strong></td><td class="t n" style="color:${ai2ColorHex};"><strong>${f1(ai2Total)}</strong></td><td class="t" colspan="2"></td></tr>
+  <tr style="page-break-inside:avoid;"><td class="c" colspan="2">Strong types (score ≥ ${STRONG_THRESHOLD})</td><td class="c n">${ins.strongTeam}</td><td class="c n">${ins.strongA1}</td><td class="c n">${ins.strongA2}</td><td class="c" colspan="2"></td></tr>
+  <tr style="page-break-inside:avoid;"><td class="c" colspan="2">Types with a linked source</td><td class="c n">—</td><td class="c n">${ins.linked1}/10</td><td class="c n">${ins.linked2}/10</td><td class="c" colspan="2"></td></tr>
+</table>
+<p class="note">Type scores run 0–10 and sum to the Total Innovation Score. Position uses the three-source average: Differentiator ≥ ${STRONG_THRESHOLD}.0, Developing 5.0–6.9, Opportunity &lt; 5.0.</p>`);
 
-    // ----- Triangulation section -----
-
-    // Pull score arrays for each source; nulls excluded from stats
-    const teamScoresArr = TYPES_ORDER.map(t => teamTypeScores[t].scored === teamTypeScores[t].total ? teamTypeScores[t].score : null).filter(v => v !== null);
-    const ai1ScoresArr = TYPES_ORDER.map(t => ai1Scores[t]).filter(v => typeof v === "number");
-    const ai2ScoresArr = TYPES_ORDER.map(t => ai2Scores[t]).filter(v => typeof v === "number");
-
-    const stdDev = (vals) => {
-      if (vals.length < 2) return null;
-      const m = vals.reduce((a, b) => a + b, 0) / vals.length;
-      const variance = vals.reduce((s, v) => s + (v - m) ** 2, 0) / (vals.length - 1);
-      return Math.sqrt(variance);
-    };
-
-    const teamSD = stdDev(teamScoresArr);
-    const ai1SD = stdDev(ai1ScoresArr);
-    const ai2SD = stdDev(ai2ScoresArr);
-
-    const avgTile = (label, total, value, sd, strong, color) => `
-      <td style="width:33.3%;border-top:2pt solid ${color};padding:10pt 14pt;background:#F8FAFC;">
-        <div style="font-size:9pt;color:#64748B;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin-bottom:3pt;">${label}</div>
-        <div style="font-size:22pt;color:${color};font-family:Consolas,monospace;font-weight:600;line-height:1.1;">${fmt1(total)}<span style="font-size:11pt;color:#94A3B8;font-weight:400;">/100</span></div>
-        <div style="font-size:9pt;color:#64748B;font-family:Consolas,monospace;margin-top:5pt;">Avg <strong style="color:#475569;">${fmt(value)}</strong> · SD <strong style="color:#475569;">${fmt(sd)}</strong> · Strong types <strong style="color:#475569;">${strong}</strong></div>
-      </td>`;
-
-    const avgsRow = `
-      <table style="width:100%;border-collapse:separate;border-spacing:6pt 0;margin:8pt 0 14pt;">
-        <tr>
-          ${avgTile("Team", teamTotal, teamAvg, teamSD, countStrong(teamTypeFinal), teamColorHex)}
-          ${avgTile(`${escapeHTML(ai1Name)}`, ai1Total, ai1Avg, ai1SD, countStrong(ai1Scores), ai1ColorHex)}
-          ${avgTile(`${escapeHTML(ai2Name)}`, ai2Total, ai2Avg, ai2SD, countStrong(ai2Scores), ai2ColorHex)}
-        </tr>
-      </table>`;
-
-    // Vertical bar chart — 10 type groups, 3 bars per group (Team / AI1 / AI2)
-    const CHART_H = 150;        // pt — bar area height
-    const BAR_W = 11;           // pt — width of each colored bar
-    const INNER_GAP = 1;        // pt — gap between the 3 bars within a type group
-    const GROUP_GAP = 7;        // pt — gap between type groups
-
-    const SHORT_LABELS = {
-      "Profit Model": "Profit<br/>Model",
-      "Network": "Network",
-      "Structure": "Structure",
-      "Process": "Process",
-      "Product Performance": "Product<br/>Performance",
-      "Product System": "Product<br/>System",
-      "Service": "Service",
-      "Channel": "Channel",
-      "Brand": "Brand",
-      "Customer Engagement": "Customer<br/>Engagement",
-    };
-
-    const verticalBar = (val, color) => {
+    // Bar chart (tables only, so it renders in Word)
+    const CHART_H = 140, BAR_W = 10, GROUP_GAP = 7;
+    const SHORT = { "Profit Model": "Profit<br/>Model", "Product Performance": "Product<br/>Perf.", "Product System": "Product<br/>System", "Customer Engagement": "Customer<br/>Engage." };
+    const vbar = (val, color) => {
       const v = typeof val === "number" ? val : 0;
-      const filled = Math.max(0, (v / 10) * CHART_H);
-      const empty = CHART_H - filled;
-      const labelStr = typeof val === "number" ? val.toFixed(1) : "—";
-      return `<td style="vertical-align:bottom;padding:0 ${INNER_GAP}pt;">
-        <div style="font-size:7pt;text-align:center;color:${color};font-family:Consolas,monospace;font-weight:600;line-height:1;margin-bottom:2pt;">${labelStr}</div>
-        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:${BAR_W}pt;">
-          <tr><td style="height:${empty.toFixed(1)}pt;line-height:${empty.toFixed(1)}pt;font-size:1pt;mso-line-height-rule:exactly;">&nbsp;</td></tr>
-          <tr><td style="height:${filled.toFixed(1)}pt;line-height:${filled.toFixed(1)}pt;font-size:1pt;background:${color};mso-line-height-rule:exactly;border-top:0.5pt solid ${color};">&nbsp;</td></tr>
-        </table>
-      </td>`;
+      const filled = Math.max(0.5, (v / 10) * CHART_H), empty = CHART_H - filled;
+      return `<td style="vertical-align:bottom;padding:0 0.75pt;">
+        <p style="margin:0 0 1pt;font-size:6.5pt;text-align:center;color:${color};font-weight:bold;">${typeof val === "number" ? val.toFixed(1) : "—"}</p>
+        <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:${BAR_W}pt;">
+          <tr><td style="height:${empty.toFixed(1)}pt;font-size:1pt;line-height:1pt;mso-line-height-rule:exactly;">&nbsp;</td></tr>
+          <tr><td style="height:${filled.toFixed(1)}pt;font-size:1pt;line-height:1pt;background:${color};mso-line-height-rule:exactly;">&nbsp;</td></tr>
+        </table></td>`;
     };
+    const chart = keep(`
+<p class="fig">Exhibit 1 &middot; Score by innovation type, three assessments (0–10)</p>
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:4pt auto 0;">
+  <tr style="height:${CHART_H + 12}pt;">${TYPES_ORDER.map((t, idx) => `<td style="vertical-align:bottom;padding:0 0 0 ${idx ? GROUP_GAP : 0}pt;border-bottom:0.75pt solid ${SLATE};"><table cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>${vbar(teamTypeFinal[t], teamColorHex)}${vbar(ai1Scores[t], ai1ColorHex)}${vbar(ai2Scores[t], ai2ColorHex)}</tr></table></td>`).join("")}</tr>
+  <tr>${TYPES_ORDER.map((t, idx) => `<td style="text-align:center;vertical-align:top;padding:4pt 0 0 ${idx ? GROUP_GAP : 0}pt;font-size:7pt;color:${SLATE};line-height:1.15;">${SHORT[t] || t}</td>`).join("")}</tr>
+</table>
+<p style="text-align:center;margin:6pt 0 0;font-size:8.5pt;color:${SLATE};">${[["Team", teamColorHex], [a1, ai1ColorHex], [a2, ai2ColorHex]].map(([n, c]) => `<span style="color:${c};font-size:10pt;">&#9632;</span> ${E(n)}`).join(" &nbsp;&nbsp;&nbsp; ")}</p>`, 10);
 
-    const groupCells = TYPES_ORDER.map((t, idx) => {
-      const team = teamTypeScores[t].scored === teamTypeScores[t].total ? teamTypeScores[t].score : null;
-      const a1 = ai1Scores[t];
-      const a2 = ai2Scores[t];
-      const padLeft = idx === 0 ? 0 : GROUP_GAP;
-      return `<td style="vertical-align:bottom;padding:0 0 0 ${padLeft}pt;">
-        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>
-          ${verticalBar(team, teamColorHex)}
-          ${verticalBar(a1, ai1ColorHex)}
-          ${verticalBar(a2, ai2ColorHex)}
-        </tr></table>
-      </td>`;
-    }).join("");
+    // ---------- Triangulation ----------
+    const consensusItems = ins.consensus.slice().sort((a, b) => b.team - a.team).slice(0, 4);
+    const teamVsAIs = [...triangulation].sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI)).slice(0, 3);
+    const aisDisagree = [...triangulation].sort((a, b) => b.aiSpread - a.aiSpread).slice(0, 3);
+    const patternRow = (it, note) => `<tr style="page-break-inside:avoid;"><td class="c" style="width:120pt;"><strong>${E(it.type)}</strong></td>
+      <td class="c n" style="color:${teamColorHex};">${it.team.toFixed(1)}</td><td class="c n" style="color:${ai1ColorHex};">${it.ai1.toFixed(1)}</td><td class="c n" style="color:${ai2ColorHex};">${it.ai2.toFixed(1)}</td>
+      <td class="c" style="font-size:9pt;color:${SLATE};">${E(note || "")}</td></tr>`;
+    const patternBlock = (title, desc, color, items, noteFn) => keep(`
+<p class="h3" style="color:${color};margin-top:12pt;">${title}</p>
+<p class="note" style="margin-top:0;">${desc}</p>
+<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+  <tr><th class="h">Type</th><th class="h n">Team</th><th class="h n">${E(a1)}</th><th class="h n">${E(a2)}</th><th class="h">Observation</th></tr>
+  ${items.length ? items.map(it => patternRow(it, noteFn ? noteFn(it) : "All three within 1.5 points")).join("") : `<tr><td class="c" colspan="5"><em style="color:${MUTED};">None.</em></td></tr>`}
+</table>`);
 
-    const labelCells = TYPES_ORDER.map((t, idx) => {
-      const padLeft = idx === 0 ? 0 : GROUP_GAP;
-      return `<td style="text-align:center;vertical-align:top;padding:5pt ${padLeft / 2}pt 0 ${padLeft / 2}pt;font-size:7.5pt;color:#475569;line-height:1.2;">${SHORT_LABELS[t]}</td>`;
-    }).join("");
-
-    const legendSwatch = (color, name) => `<span style="display:inline-block;margin-right:14pt;font-size:9pt;color:#475569;"><span style="display:inline-block;width:9pt;height:9pt;background:${color};vertical-align:middle;margin-right:4pt;border:0.5pt solid ${color};"></span>${escapeHTML(name)}</span>`;
-
-    const chartTable = `
-      <div style="margin:6pt 0 6pt 0;">
-        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0 auto;">
-          <tr style="height:${CHART_H + 12}pt;">${groupCells}</tr>
-          <tr>${labelCells}</tr>
-        </table>
-        <div style="text-align:center;margin-top:6pt;">
-          ${legendSwatch(teamColorHex, "Team")}
-          ${legendSwatch(ai1ColorHex, ai1Name)}
-          ${legendSwatch(ai2ColorHex, ai2Name)}
-        </div>
-      </div>`;
-
-    // Pattern analysis — only types where all three sources have scored
-    const consensusItems = triangulation.filter(i => i.spread <= 1.5).sort((a, b) => b.team - a.team).slice(0, 4);
-    const teamVsAIsItems = [...triangulation].sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI)).slice(0, 3);
-    const aisDisagreeItems = [...triangulation].sort((a, b) => b.aiSpread - a.aiSpread).slice(0, 3);
-
-    const patternItem = (item, note) => `
-      <div style="padding:5pt 0;border-bottom:0.25pt solid #E2E8F0;">
-        <div style="font-size:10pt;font-weight:600;color:#0F172A;">${escapeHTML(item.type)}</div>
-        <div style="font-size:9pt;font-family:Consolas,monospace;color:#64748B;margin-top:2pt;">
-          Team:&nbsp;<strong style="color:${teamColorHex};">${item.team.toFixed(1)}</strong>
-          &nbsp;·&nbsp;${escapeHTML(ai1Name)}:&nbsp;<strong style="color:${ai1ColorHex};">${item.ai1.toFixed(1)}</strong>
-          &nbsp;·&nbsp;${escapeHTML(ai2Name)}:&nbsp;<strong style="color:${ai2ColorHex};">${item.ai2.toFixed(1)}</strong>
-          ${note ? `&nbsp;&nbsp;<span style="color:#475569;font-style:italic;">— ${escapeHTML(note)}</span>` : ""}
-        </div>
-        ${typeEvidence[item.type] ? `<div style="font-size:9pt;font-style:italic;color:#475569;margin-top:3pt;">"${escapeHTML(typeEvidence[item.type])}"</div>` : ""}
-      </div>`;
-
-    const patternBlock = (title, subtitle, color, items, noteFn) => `
-      <div style="padding:8pt 12pt;border:0.5pt solid #E2E8F0;border-left:2pt solid ${color};background:#F8FAFC;margin:6pt 0;">
-        <div style="display:block;margin-bottom:2pt;">
-          <span style="font-size:10pt;font-weight:600;color:${color};letter-spacing:0.04em;text-transform:uppercase;">${title}</span>
-          <span style="font-size:9pt;color:#94A3B8;margin-left:6pt;">— ${subtitle}</span>
-        </div>
-        ${items.length === 0
-          ? `<div style="font-size:9pt;color:#94A3B8;font-style:italic;padding:3pt 0;">None.</div>`
-          : items.map(item => patternItem(item, noteFn ? noteFn(item) : null)).join("")}
-      </div>`;
-
-    const patternsTable = `
-      ${patternBlock("Consensus", "All three within 1.5 points", "#059669", consensusItems, null)}
-      ${patternBlock("Team vs. AIs", "Team disagrees with AI consensus", "#EA580C", teamVsAIsItems, c => `Team ${c.teamVsAI > 0 ? "higher" : "lower"} by ${Math.abs(c.teamVsAI).toFixed(1)}`)}
-      ${patternBlock("AIs Disagree", `${ai1Name} vs ${ai2Name}`, "#7C3AED", aisDisagreeItems, c => `AI spread: ${c.aiSpread.toFixed(1)}`)}`;
-
+    const qCell = (v, color) => `<td class="c n" style="width:30pt;color:${color};font-weight:bold;">${typeof v === "number" ? v : "—"}</td>`;
+    const qRowHtml = (g, note) => `<tr style="page-break-inside:avoid;">
+      <td class="c" style="width:30pt;vertical-align:top;"><strong>${g.code}</strong></td>
+      <td class="c" style="vertical-align:top;">${E(g.text)}
+        ${note ? `<p style="margin:2pt 0 0;font-size:8.5pt;color:${MUTED};">${note}</p>` : ""}
+        ${g.ev1 ? `<p style="margin:2pt 0 0;font-size:8.5pt;color:${SLATE};"><span style="color:${ai1ColorHex};font-weight:bold;">${E(a1)}:</span> ${E(g.ev1)}</p>` : ""}
+        ${g.ev2 ? `<p style="margin:1pt 0 0;font-size:8.5pt;color:${SLATE};"><span style="color:${ai2ColorHex};font-weight:bold;">${E(a2)}:</span> ${E(g.ev2)}</p>` : ""}
+      </td>${qCell(g.team, teamColorHex)}${qCell(g.ai1, ai1ColorHex)}${qCell(g.ai2, ai2ColorHex)}</tr>`;
+    const qHead = `<tr><th class="h">Code</th><th class="h">Question and AI evidence</th><th class="h n">Team</th><th class="h n">AI 1</th><th class="h n">AI 2</th></tr>`;
     const qGapTeam = [...questionGaps].filter(g => Math.abs(g.teamVsAI) >= 1.5).sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI)).slice(0, 6);
     const qGapAI = [...questionGaps].filter(g => g.aiSpread >= 2).sort((a, b) => b.aiSpread - a.aiSpread).slice(0, 4);
-    const qGapRow = (g, note) => `<tr>
-        <td style="width:34pt;vertical-align:top;"><strong>${g.code}</strong></td>
-        <td style="vertical-align:top;">${escapeHTML(g.text)}
-          <div style="font-size:8.5pt;color:#64748B;margin-top:2pt;">${note}</div>
-          ${g.ev1 ? `<div style="font-size:8.5pt;color:#64748B;"><span style="color:${ai1ColorHex};font-weight:600;">${escapeHTML(ai1Name)}:</span> ${escapeHTML(g.ev1)}</div>` : ""}
-          ${g.ev2 ? `<div style="font-size:8.5pt;color:#64748B;"><span style="color:${ai2ColorHex};font-weight:600;">${escapeHTML(ai2Name)}:</span> ${escapeHTML(g.ev2)}</div>` : ""}
-        </td>
-        ${qCell(g.team, teamColorHex)}${qCell(g.ai1, ai1ColorHex)}${qCell(g.ai2, ai2ColorHex)}
-      </tr>`;
-    const qHeader = `<tr><td></td><td style="font-size:8.5pt;color:#94A3B8;">Question</td><td class="num" style="font-size:8.5pt;color:${teamColorHex};">Team</td><td class="num" style="font-size:8.5pt;color:${ai1ColorHex};">AI 1</td><td class="num" style="font-size:8.5pt;color:${ai2ColorHex};">AI 2</td></tr>`;
-    const questionSection = questionGaps.length ? `
-<h3 style="font-size:11pt;color:#0F172A;">Question-Level Disagreements</h3>
-<p style="font-size:9.5pt;color:#64748B;margin:0 0 4pt;">All three sources answered the same ${NQ} questions on the same 0–3 scale, so gaps can be traced to specific questions.</p>
-<p style="font-size:10pt;font-weight:600;color:${teamColorHex};margin:8pt 0 2pt;">Team vs. AIs (gap ≥ 1.5 points)</p>
-${qGapTeam.length ? `<table>${qHeader}${qGapTeam.map(g => qGapRow(g, `Team ${g.teamVsAI > 0 ? "higher" : "lower"} than the AI average by ${Math.abs(g.teamVsAI).toFixed(1)}`)).join("")}</table>` : `<p style="font-size:9pt;color:#94A3B8;font-style:italic;">None.</p>`}
-<p style="font-size:10pt;font-weight:600;color:${ai2ColorHex};margin:8pt 0 2pt;">AIs disagree (spread ≥ 2 points)</p>
-${qGapAI.length ? `<table>${qHeader}${qGapAI.map(g => qGapRow(g, `AI spread ${g.aiSpread}`)).join("")}</table>` : `<p style="font-size:9pt;color:#94A3B8;font-style:italic;">None.</p>`}
-` : "";
+    const qTable = (rows, noteFn) => rows.length
+      ? `<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">${qHead}${rows.map(g => qRowHtml(g, noteFn(g))).join("")}</table>`
+      : `<p class="note"><em>None at this threshold.</em></p>`;
 
-    const triangulationSection = triangulation.length > 0 ? `
-<h2>Triangulation</h2>
-<p style="font-size:10pt;color:#64748B;margin:0 0 4pt;">Three perspectives on ${escapeHTML(companyName || "the company")}'s innovation profile — the team's collective scoring, ${escapeHTML(ai1Name)}'s independent assessment, and ${escapeHTML(ai2Name)}'s.</p>
+    // ---------- Evidence quality ----------
+    const statusHex = { linked: "#047857", unlinked: "#B45309", declared: "#B45309", missing: "#B91C1C" };
+    const coverageRows = TYPES_ORDER.map(t => {
+      const s1 = sourceStatus(ai1Parsed, t), s2 = sourceStatus(ai2Parsed, t);
+      const h1 = highScoreUnsourced(ai1Parsed, ai1Q, t), h2 = highScoreUnsourced(ai2Parsed, ai2Q, t);
+      const cell = (s, h) => `<td class="c" style="font-size:9pt;color:${statusHex[s]};font-weight:bold;">${SOURCE_STATUS[s].label}${h ? `<br/><span style="font-weight:normal;color:#B91C1C;font-size:8pt;">2–3 scores unsourced</span>` : ""}</td>`;
+      return `<tr style="page-break-inside:avoid;"><td class="c"><strong>${E(t)}</strong></td>${cell(s1, h1)}${cell(s2, h2)}</tr>`;
+    }).join("");
+    const vq = ins.vq;
+    const verifyRow = (which, parsed, name, color) => {
+      const v = verification[which];
+      const src = vq && v.src !== null && v.src !== undefined ? (parsed.sources[vq.type] || [])[v.src] : null;
+      const srcHtml = src ? (src.url ? `<a href="${E(src.url)}" style="color:#1D4ED8;">${E(src.title || src.url)}</a>` : E(src.title)) : "<em>(none selected)</em>";
+      return `<tr style="page-break-inside:avoid;"><td class="c" style="width:110pt;vertical-align:top;"><strong style="color:${color};">${E(name)}</strong><br/><span style="font-size:8.5pt;color:${MUTED};">scored ${vq ? vq[which] : "—"} of 3</span></td>
+        <td class="c" style="vertical-align:top;font-size:9.5pt;">${srcHtml}${v.note ? `<br/><span style="color:${SLATE};">“${E(v.note)}”</span>` : ""}</td>
+        <td class="c" style="width:95pt;vertical-align:top;font-size:9pt;font-weight:bold;">${E(ins.verdictLabel(v.verdict))}</td></tr>`;
+    };
 
-<h3 style="margin-top:14pt;font-size:11pt;color:#0F172A;">Total Innovation Score by Source · 0–100</h3>
-${avgsRow}
+    // ---------- Appendix A: question-level scoring ----------
+    const appendixA = TYPES_ORDER.map(t => {
+      const cat = TYPE_INFO[t].category, cc = catColorHex(cat);
+      const rows = QUESTIONS.filter(q => q.type === t).map((q, i) => {
+        const key = `${t}:${i}`;
+        const e1 = ai1Parsed.evidence[key], e2 = ai2Parsed.evidence[key];
+        return `<tr style="page-break-inside:avoid;"><td class="c" style="width:30pt;vertical-align:top;"><strong>${questionCode(t, i)}</strong></td>
+          <td class="c" style="vertical-align:top;">${E(q.text)}
+            ${e1 ? `<p style="margin:2pt 0 0;font-size:8pt;color:${SLATE};"><span style="color:${ai1ColorHex};font-weight:bold;">${E(a1)}:</span> ${E(e1)}</p>` : ""}
+            ${e2 ? `<p style="margin:1pt 0 0;font-size:8pt;color:${SLATE};"><span style="color:${ai2ColorHex};font-weight:bold;">${E(a2)}:</span> ${E(e2)}</p>` : ""}
+          </td>${qCell(questionScores[key], teamColorHex)}${qCell(ai1Q[key], ai1ColorHex)}${qCell(ai2Q[key], ai2ColorHex)}</tr>`;
+      }).join("");
+      return keep(`
+<p class="h3" style="color:${cc};margin-top:14pt;border-bottom:0.75pt solid ${cc};padding-bottom:2pt;">${E(t)} <span style="font-size:9pt;color:${MUTED};font-weight:normal;">&middot; ${cat} &middot; Team ${fmt(teamTypeFinal[t])} &middot; ${E(a1)} ${fmt(ai1Scores[t])} &middot; ${E(a2)} ${fmt(ai2Scores[t])}</span></p>
+<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">${qHead}${rows}</table>
+${typeEvidence[t] ? `<p class="note"><strong style="color:${cc};">Team evidence:</strong> <em>${E(typeEvidence[t])}</em></p>` : ""}`);
+    }).join("");
 
-<h3 style="font-size:11pt;color:#0F172A;">Score by Type · Three-Way Comparison</h3>
-${chartTable}
+    // ---------- Appendix B: citations ----------
+    const citationBlock = (parsed, name, color) => {
+      const rows = TYPES_ORDER.map(t => {
+        const st = sourceStatus(parsed, t);
+        const list = parsed.sources[t] || [];
+        const items = list.map(src => src.url
+          ? `<p style="margin:1pt 0;font-size:9pt;"><a href="${E(src.url)}" style="color:#1D4ED8;">${E(src.title || src.url)}</a><br/><span style="font-size:7.5pt;color:${MUTED};">${E(src.url)}</span></p>`
+          : `<p style="margin:1pt 0;font-size:9pt;">${E(src.title)} <em style="color:#B45309;">(no link)</em></p>`).join("");
+        const none = st === "declared" ? `<p style="margin:1pt 0;font-size:9pt;color:#B45309;"><em>No public source:</em> ${E(parsed.noSource[t])}</p>` : "";
+        const miss = st === "missing" ? `<p style="margin:1pt 0;font-size:9pt;color:#B91C1C;"><em>No source given.</em></p>` : "";
+        return `<tr style="page-break-inside:avoid;"><td class="c" style="width:115pt;vertical-align:top;"><strong>${E(t)}</strong><br/><span style="font-size:8pt;font-weight:bold;color:${statusHex[st]};">${SOURCE_STATUS[st].label}</span></td><td class="c" style="vertical-align:top;">${items}${none}${miss}</td></tr>`;
+      }).join("");
+      return `
+<p class="h3" style="color:${color};margin-top:14pt;border-bottom:1.5pt solid ${color};padding-bottom:2pt;">${E(name)} &middot; Citations <span style="font-size:9pt;color:${MUTED};font-weight:normal;">&middot; ${TYPES_ORDER.filter(t => sourceStatus(parsed, t) === "linked").length} of 10 types with a linked source</span></p>
+<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">${rows}</table>`;
+    };
 
-<h3 style="font-size:11pt;color:#0F172A;page-break-after:avoid;mso-page-break-after:avoid;">Pattern Analysis</h3>
-<div style="page-break-inside:avoid;mso-page-break-inside:avoid;">
-${patternsTable}
-</div>
-${questionSection}
-` : `
-<h2>Triangulation</h2>
-<p style="font-size:10pt;color:#64748B;font-style:italic;">Triangulation requires complete scoring from the team and both AI analysts. This section is empty because at least one source did not score every type.</p>
-`;
+    // ---------- Section key points ----------
+    const recPoints = [];
+    if (tacticRecs.length) {
+      recPoints.push(`${tacticRecs.length} recommended moves across ${ins.recCats.length} of 3 innovation categories (${ins.recCats.join(", ")}).${ins.recCats.length === 1 && tacticRecs.length > 1 ? " A single-category portfolio is easier for competitors to copy; the team should be ready to defend the focus." : ""}`);
+      recPoints.push(`Path to five: strong types rise from ${ins.strongTeam} to as many as ${projectedStrong} if every move succeeds${projectedStrong >= 5 ? " — enough to clear the five-type threshold" : ""}.`);
+      const attacked = tacticRecs.filter(r => (ins.means[r.type] ?? 10) < 5).map(r => r.type);
+      if (attacked.length) recPoints.push(`${ins.listJoin([...new Set(attacked)])} ${new Set(attacked).size === 1 ? "is an opportunity type" : "are opportunity types"} (three-source average below 5), where a move is least expected.`);
+      if (ins.doublingDown.length) recPoints.push(`${ins.listJoin(ins.doublingDown.map(r => r.name))} ${ins.doublingDown.length === 1 ? "builds" : "build"} on an existing strength rather than closing a gap.`);
+    } else recPoints.push("No recommendations were recorded.");
+
+    const profilePoints = [
+      `Total Innovation Score: Team ${f1(teamTotal)}, ${E(a1)} ${f1(ai1Total)}, ${E(a2)} ${f1(ai2Total)} (out of 100).`,
+      ins.topTypes.length ? `Strongest: ${ins.listJoin(ins.topTypes.map(t => `${E(t)} (${f1(ins.means[t])})`))}.` : null,
+      ins.bottomTypes.length ? `Weakest: ${ins.listJoin(ins.bottomTypes.map(t => `${E(t)} (${f1(ins.means[t])})`))}.` : null,
+      ins.catMeans.length >= 2 ? `By category: ${ins.catMeans.map(c => `${c.cat} ${f1(c.mean)}`).join(" · ")}.` : null,
+    ].filter(Boolean);
+
+    const triPoints = [
+      `${ins.consensus.length} of 10 types show three-way consensus (all scores within 1.5 points).`,
+      ins.biggestPerception ? `Largest team-versus-AI gap: ${E(ins.biggestPerception.type)} — the team scores it ${Math.abs(ins.biggestPerception.teamVsAI).toFixed(1)} points ${ins.biggestPerception.teamVsAI > 0 ? "higher" : "lower"} than the AI average.` : null,
+      ins.biggestAISplit ? `The AIs disagree most on ${E(ins.biggestAISplit.type)} (${ins.biggestAISplit.aiSpread.toFixed(1)}-point spread), a sign the framework is ambiguous here or the models drew on different information.` : null,
+      questionGaps.length ? `At question level, all three sources gave the identical answer on ${ins.qIdentical} of ${questionGaps.length} questions.` : null,
+    ].filter(Boolean);
+
+    const evPoints = [
+      `${E(a1)} cited a linked source for ${ins.linked1} of 10 types; ${E(a2)} for ${ins.linked2} of 10.`,
+      ins.unsourcedHigh.length ? `Scores of 2–3 lack a linked source in ${ins.listJoin(ins.unsourcedHigh.map(E))}. Treat those AI scores with caution.` : `Every AI score of 2–3 is backed by a linked source for its type.`,
+      vq ? `Source check on ${vq.code}: ${E(a1)} — ${E(ins.verdictLabel(verification.ai1.verdict).toLowerCase())}; ${E(a2)} — ${E(ins.verdictLabel(verification.ai2.verdict).toLowerCase())}.` : "The source check was not completed.",
+      ins.declaredAny ? E(PRIVATE_CO_CAVEAT) : null,
+    ].filter(Boolean);
+
+    // ---------- Table of contents ----------
+    const TOC = [
+      ["sec-exec", "", "Executive Summary", "Headline findings and recommendations at a glance"],
+      ["sec-recs", "1", "Strategic Recommendations", "The moves we recommend, the evidence, and what adoption requires"],
+      ["sec-profile", "2", "Innovation Profile", "Scores for all ten innovation types and the Total Innovation Score"],
+      ["sec-tri", "3", "Triangulation", "Where the team and two independent AI assessments agree and differ"],
+      ["sec-evidence", "4", "Evidence Quality", "Source coverage and the team's verification of AI citations"],
+      ["sec-appA", "A", "Appendix A · Question-Level Scoring", `All ${NQ} diagnostic questions, three sources, with AI evidence`],
+      ["sec-appB", "B", "Appendix B · AI Citations", "Every source each AI cited, by innovation type, with links"],
+      ["sec-appC", "C", "Appendix C · Methodology", "Framework, scoring instrument, thresholds, and limitations"],
+    ];
+    const tocRows = TOC.map(([id, n, title, desc]) => `<tr style="page-break-inside:avoid;">
+      <td style="width:34pt;vertical-align:top;padding:9pt 0;border-bottom:0.5pt solid ${RULE};"><p style="margin:0;font-family:Georgia,serif;font-size:16pt;color:${ACCENT};">${n || "&#8226;"}</p></td>
+      <td style="vertical-align:top;padding:9pt 0;border-bottom:0.5pt solid ${RULE};"><p style="margin:0;font-size:13pt;"><a href="#${id}" style="color:${NAVY};text-decoration:none;font-weight:bold;">${title}</a></p><p style="margin:2pt 0 0;font-size:9.5pt;color:${MUTED};">${E(desc)}</p></td>
+    </tr>`).join("");
 
     return `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
 <head>
 <meta charset='utf-8'>
-<title>${escapeHTML(companyName || "Innovation Analysis")} — Innovation Workshop</title>
+<title>${E(company)} — Innovation Portfolio Assessment</title>
 <!--[if gte mso 9]>
 <xml>
 <w:WordDocument>
@@ -952,84 +1667,158 @@ ${questionSection}
 </xml>
 <![endif]-->
 <style>
-@page WordSection1 { size: 8.5in 11in; mso-page-orientation: portrait; margin: 1.0in 1.0in 1.0in 1.0in; }
+@page WordSection1 { size: 8.5in 11in; margin: 0.9in 0.9in 0.85in 0.9in; mso-header-margin: 0.4in; mso-footer-margin: 0.4in; mso-header: h1; mso-footer: f1; mso-title-page: yes; mso-first-header: fh1; mso-first-footer: ff1; }
 div.WordSection1 { page: WordSection1; }
-body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1E293B; }
-h1 { font-size: 26pt; color: #0F172A; margin: 0 0 4pt; font-weight: 700; letter-spacing: -0.01em; }
-h2 { font-size: 16pt; color: #0F172A; margin: 22pt 0 8pt; font-weight: 600; padding-bottom: 4pt; border-bottom: 1pt solid #E2E8F0; }
-h3 { font-size: 12pt; margin: 14pt 0 4pt; font-weight: 600; }
-.subtitle { font-size: 12pt; color: #475569; margin: 4pt 0 2pt; font-weight: 500; }
-.qualifier { font-size: 11pt; color: #475569; margin: 2pt 0 6pt; font-style: italic; }
-.meta { font-size: 9pt; color: #94A3B8; letter-spacing: 0.04em; }
-.brand { font-size: 9pt; color: #3B82F6; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; margin-bottom: 8pt; }
-table { border-collapse: collapse; margin: 6pt 0 12pt; width: 100%; }
-table.scores th { background: #0F172A; color: white; padding: 7pt 10pt; text-align: left; font-size: 10pt; font-weight: 600; }
-table.scores td { padding: 6pt 10pt; border-bottom: 0.5pt solid #E2E8F0; font-size: 10.5pt; }
-.num { font-family: Consolas, monospace; text-align: right; font-variant-numeric: tabular-nums; }
-table:not(.scores) td { padding: 4pt 8pt; border-bottom: 0.25pt solid #F1F5F9; font-size: 10pt; }
-.totals-row { background: #F8FAFC; font-weight: 600; }
-.callout { padding: 10pt 14pt; background: #EFF6FF; border-left: 3pt solid #3B82F6; margin: 8pt 0; font-size: 10.5pt; color: #1E3A8A; }
-ul { margin: 4pt 0 8pt; padding-left: 22pt; }
-.footer-note { margin-top: 24pt; padding-top: 8pt; border-top: 0.5pt solid #E2E8F0; font-size: 9pt; color: #94A3B8; font-style: italic; }
+body { font-family: Calibri, Arial, sans-serif; font-size: 10.5pt; color: ${INK}; }
+p { margin: 0 0 6pt; line-height: 1.35; }
+h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 24pt; font-weight: normal; color: ${NAVY}; margin: 0 0 6pt; page-break-after: avoid; mso-outline-level: 1; }
+.kicker { font-size: 9pt; letter-spacing: 2pt; text-transform: uppercase; color: ${ACCENT}; font-weight: bold; margin: 0 0 2pt; page-break-after: avoid; }
+.lede { font-size: 11.5pt; color: ${SLATE}; line-height: 1.45; margin: 0 0 10pt; padding-bottom: 8pt; border-bottom: 0.75pt solid ${RULE}; }
+.h3 { font-size: 12pt; font-weight: bold; color: ${NAVY}; margin: 14pt 0 3pt; page-break-after: avoid; }
+.fig { font-size: 8.5pt; letter-spacing: 1pt; text-transform: uppercase; color: ${MUTED}; font-weight: bold; margin: 0 0 2pt; page-break-after: avoid; }
+.note { font-size: 8.5pt; color: ${MUTED}; margin: 4pt 0 0; }
+th.h { background: ${NAVY}; color: #FFFFFF; font-size: 8.5pt; font-weight: bold; text-align: left; padding: 5pt 6pt; letter-spacing: 0.4pt; }
+td.c { font-size: 9.5pt; padding: 5pt 6pt; border-bottom: 0.5pt solid ${RULE}; vertical-align: top; }
+td.t { font-size: 10pt; padding: 6pt; background: ${TINT}; border-top: 1pt solid ${NAVY}; border-bottom: 0.5pt solid ${RULE}; }
+.n { text-align: right; font-family: Consolas, 'Courier New', monospace; }
+a { color: #1D4ED8; }
 </style>
 </head>
 <body>
 <div class="WordSection1">
 
-<div class="brand">Innovation Workshop · Doblin Ten Types</div>
-<h1>${escapeHTML(companyName || "Innovation Analysis")}</h1>
-${companyContext.trim() ? `<p class="qualifier">${escapeHTML(companyContext.trim())}</p>` : ""}
-<p class="subtitle">${teamName ? `Team: ${escapeHTML(teamName)} · ` : ""}Three-way assessment</p>
-<p class="meta">Generated ${escapeHTML(dateStr)} · Sources: Team, ${escapeHTML(ai1Name || "(model 1)")}, and ${escapeHTML(ai2Name || "(model 2)")} — each scored all ${NQ} questions (0–3)</p>
+<!-- ===================== COVER ===================== -->
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+  <tr style="page-break-inside:avoid;"><td style="background:${NAVY};padding:34pt 30pt 30pt;height:300pt;vertical-align:bottom;">
+    <p style="margin:0 0 70pt;font-size:9pt;letter-spacing:3pt;text-transform:uppercase;color:#C9D3E0;">Innovation Portfolio Assessment</p>
+    <p style="margin:0;font-family:Georgia,serif;font-size:40pt;color:#FFFFFF;line-height:1.05;">${E(company)}</p>
+    ${scope ? `<p style="margin:6pt 0 0;font-size:13pt;color:#C9D3E0;font-style:italic;">${E(scope)}</p>` : ""}
+    <p style="margin:16pt 0 0;font-size:1pt;line-height:1pt;border-top:2pt solid ${ACCENT};width:80pt;">&nbsp;</p>
+    <p style="margin:10pt 0 0;font-size:13pt;color:#FFFFFF;">Ten Types of Innovation diagnostic and strategic recommendations</p>
+  </td></tr>
+</table>
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:34pt;">
+  <tr>
+    <td style="width:50%;vertical-align:top;padding-right:16pt;">
+      <p style="margin:0;font-size:8pt;letter-spacing:1.5pt;text-transform:uppercase;color:${MUTED};font-weight:bold;">Prepared for</p>
+      <p style="margin:2pt 0 14pt;font-size:12pt;color:${NAVY};">${E(company)} leadership team</p>
+      <p style="margin:0;font-size:8pt;letter-spacing:1.5pt;text-transform:uppercase;color:${MUTED};font-weight:bold;">Prepared by</p>
+      <p style="margin:2pt 0 14pt;font-size:12pt;color:${NAVY};">${E(preparedBy)}</p>
+      <p style="margin:0;font-size:8pt;letter-spacing:1.5pt;text-transform:uppercase;color:${MUTED};font-weight:bold;">Date</p>
+      <p style="margin:2pt 0 0;font-size:12pt;color:${NAVY};">${E(dateStr)}</p>
+    </td>
+    <td style="width:50%;vertical-align:top;border-left:0.75pt solid ${RULE};padding-left:16pt;">
+      <p style="margin:0;font-size:8pt;letter-spacing:1.5pt;text-transform:uppercase;color:${MUTED};font-weight:bold;">Approach</p>
+      <p style="margin:2pt 0 0;font-size:10pt;color:${SLATE};line-height:1.45;">A ${NQ}-question diagnostic across Doblin's ten innovation types, scored by the team and independently by ${E(a1)} and ${E(a2)}, then triangulated and checked against cited sources.</p>
+    </td>
+  </tr>
+</table>
+<p style="margin:120pt 0 0;font-size:8pt;color:${MUTED};border-top:0.75pt solid ${RULE};padding-top:6pt;">Confidential &middot; Prepared for discussion purposes &middot; Innovation Workshop ${APP_VERSION}</p>
 
-<h2>Score Comparison · 0–10 Scale</h2>
-<table class="scores">
-<tr><th>Innovation Type</th><th>Category</th><th class="num">Team</th><th class="num">${escapeHTML(ai1Name)}</th><th class="num">${escapeHTML(ai2Name)}</th></tr>
-${scoreRows}
-<tr class="totals-row" style="background:#EFF6FF;">
-  <td colspan="2"><strong>Total Innovation Score (0–100)</strong></td>
-  <td class="num"><strong>${fmt1(teamTotal)}</strong></td>
-  <td class="num"><strong>${fmt1(ai1Total)}</strong></td>
-  <td class="num"><strong>${fmt1(ai2Total)}</strong></td>
-</tr>
-<tr class="totals-row">
-  <td colspan="2"><strong>Strong types (≥ ${STRONG_THRESHOLD})</strong></td>
-  <td class="num">${countStrong(teamTypeFinal)}</td>
-  <td class="num">${countStrong(ai1Scores)}</td>
-  <td class="num">${countStrong(ai2Scores)}</td>
-</tr>
-<tr class="totals-row">
-  <td colspan="2"><strong>Average</strong></td>
-  <td class="num">${teamAvg !== null ? teamAvg.toFixed(2) : "—"}</td>
-  <td class="num">${ai1Avg !== null ? ai1Avg.toFixed(2) : "—"}</td>
-  <td class="num">${ai2Avg !== null ? ai2Avg.toFixed(2) : "—"}</td>
-</tr>
-<tr class="totals-row">
-  <td colspan="2"><strong>Std Dev</strong></td>
-  <td class="num">${fmt(teamSD)}</td>
-  <td class="num">${fmt(ai1SD)}</td>
-  <td class="num">${fmt(ai2SD)}</td>
-</tr>
+${PB}
+<!-- ===================== CONTENTS ===================== -->
+${kicker("Contents")}
+<h1>In this report</h1>
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:10pt;">${tocRows}</table>
+<p class="note" style="margin-top:10pt;">Section titles are links. Scores are on a 0–10 scale per innovation type; the Total Innovation Score is out of 100.</p>
+
+${PB}
+<!-- ===================== EXECUTIVE SUMMARY ===================== -->
+${sectionHead("sec-exec", "Executive summary", "The bottom line", E(ins.headline))}
+${tileRow}
+${keep(`<p class="h3" style="margin-top:6pt;">Key findings</p>
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+${ins.findings.map((fd, i) => `<tr style="page-break-inside:avoid;"><td style="width:18pt;vertical-align:top;padding:4pt 0;"><p style="margin:0;font-size:10pt;font-weight:bold;color:${ACCENT};">${i + 1}</p></td><td style="vertical-align:top;padding:4pt 0;"><p style="margin:0;font-size:10pt;"><strong style="color:${NAVY};">${E(fd.title)}.</strong> ${E(fd.text)}</p></td></tr>`).join("")}
+</table>`)}
+${recBox}
+
+${PB}
+<!-- ===================== 1. RECOMMENDATIONS ===================== -->
+${sectionHead("sec-recs", "Section 1", "Strategic Recommendations", `The moves the team recommends ${E(company)} make next, chosen from Doblin's library of ${TACTICS.length} innovation tactics and targeted at the gaps the diagnostic revealed.`)}
+${keyPoints(recPoints)}
+${tacticRecs.length ? tacticRecs.map(recCard).join("") : `<p class="note">No tactics were recorded.</p>`}
+
+${PB}
+<!-- ===================== 2. INNOVATION PROFILE ===================== -->
+${sectionHead("sec-profile", "Section 2", "Innovation Profile", `How ${E(company)} scores on each of the ten innovation types, according to the team and two independent AI assessments using the same ${NQ}-question instrument.`)}
+${keyPoints(profilePoints)}
+${profileTable}
+${chart}
+
+${PB}
+<!-- ===================== 3. TRIANGULATION ===================== -->
+${sectionHead("sec-tri", "Section 3", "Triangulation", "Three independent views of the same company. Agreement signals a robust finding; disagreement shows where the evidence is thin or the framework is open to interpretation.")}
+${keyPoints(triPoints)}
+${triangulation.length ? `
+${patternBlock("Consensus", "Types where all three assessments fall within 1.5 points — the most robust findings.", "#047857", consensusItems, null)}
+${patternBlock("Team versus AIs", "Types where the team's view departs most from the AI average.", teamColorHex, teamVsAIs, c => `Team ${c.teamVsAI > 0 ? "higher" : "lower"} by ${Math.abs(c.teamVsAI).toFixed(1)}`)}
+${patternBlock("AIs disagree", `Types where ${E(a1)} and ${E(a2)} are furthest apart.`, ai2ColorHex, aisDisagree, c => `AI spread ${c.aiSpread.toFixed(1)}`)}
+${keep(`<p class="h3" style="margin-top:16pt;">Question-level drivers: team versus AIs</p><p class="note" style="margin-top:0;">Questions where the team's 0–3 answer is at least 1.5 points from the AI average.</p>`)}
+${qTable(qGapTeam, g => `Team ${g.teamVsAI > 0 ? "higher" : "lower"} than the AI average by ${Math.abs(g.teamVsAI).toFixed(1)}`)}
+${keep(`<p class="h3" style="margin-top:16pt;">Question-level drivers: AIs disagree</p><p class="note" style="margin-top:0;">Questions where the two AIs are at least 2 points apart.</p>`)}
+${qTable(qGapAI, g => `AI spread ${g.aiSpread}`)}
+${keep(`<p class="h3" style="margin-top:16pt;">Independent AI perspectives</p>
+<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+  <tr style="page-break-inside:avoid;"><td class="c" style="width:110pt;"><strong style="color:${ai1ColorHex};">${E(a1)}</strong></td><td class="c">${E(ai1Parsed.summary || "(no summary paragraph found)")}</td></tr>
+  <tr style="page-break-inside:avoid;"><td class="c" style="width:110pt;"><strong style="color:${ai2ColorHex};">${E(a2)}</strong></td><td class="c">${E(ai2Parsed.summary || "(no summary paragraph found)")}</td></tr>
+</table>`)}` : `<p class="note">Triangulation requires complete scoring from the team and both AIs.</p>`}
+
+${PB}
+<!-- ===================== 4. EVIDENCE QUALITY ===================== -->
+${sectionHead("sec-evidence", "Section 4", "Evidence Quality", "How well the AI assessments are supported by verifiable sources, and what the team found when it checked them.")}
+${keyPoints(evPoints)}
+${keep(`<p class="h3">Source verification</p>
+${vq ? `<p class="note" style="margin-top:0;">The team opened one cited source from each AI on a question where the AIs disagree: <strong>${vq.code}</strong> — ${E(vq.text)} (team score ${vq.team} of 3).</p>
+<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr><th class="h">AI</th><th class="h">Source checked and what it said</th><th class="h">Verdict</th></tr>${verifyRow("ai1", ai1Parsed, a1, ai1ColorHex)}${verifyRow("ai2", ai2Parsed, a2, ai2ColorHex)}</table>` : `<p class="note"><em>Not completed.</em></p>`}`)}
+${keep(`<p class="h3" style="margin-top:16pt;">Source coverage by innovation type</p>
+<table class="data" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr><th class="h">Innovation type</th><th class="h">${E(a1)}</th><th class="h">${E(a2)}</th></tr>${coverageRows}</table>
+<p class="note">Full citations with links are listed in Appendix B.</p>`)}
+
+${PB}
+<!-- ===================== APPENDIX A ===================== -->
+${sectionHead("sec-appA", "Appendix A", "Question-Level Scoring", `Every diagnostic question as answered by the team, ${E(a1)}, and ${E(a2)} on the shared rubric: 0 None, 1 Low, 2 Medium, 3 High, judged relative to direct competitors and industry norms.`)}
+${appendixA}
+
+${PB}
+<!-- ===================== APPENDIX B ===================== -->
+${sectionHead("sec-appB", "Appendix B", "AI Citations", `Sources each AI cited for each innovation type. Links open the cited page.${ins.declaredAny ? " " + E(PRIVATE_CO_CAVEAT) : ""}`)}
+${citationBlock(ai1Parsed, a1, ai1ColorHex)}
+${PB}
+${citationBlock(ai2Parsed, a2, ai2ColorHex)}
+
+${PB}
+<!-- ===================== APPENDIX C ===================== -->
+${sectionHead("sec-appC", "Appendix C", "Methodology", "How this assessment was produced.")}
+${keep(`<p class="h3">Framework</p><p>Doblin's Ten Types of Innovation (Keeley, Pikkel, Quinn &amp; Walters, 2013) groups innovation into three categories: Configuration (Profit Model, Network, Structure, Process), Offering (Product Performance, Product System), and Experience (Service, Channel, Brand, Customer Engagement). Keeley's research found that companies innovating on five or more types at once markedly outperform single-type innovators.</p>`)}
+${keep(`<p class="h3">Scoring instrument</p><p>All three sources answered the same ${NQ} diagnostic questions on a 0–3 scale (0 None, 1 Low, 2 Medium, 3 High), judged relative to direct competitors and industry norms. Answers are weighted so that each type scores 0–10 regardless of its number of questions; the ten type scores sum to a Total Innovation Score out of 100. A type counts as strong at ${STRONG_THRESHOLD}.0 or above.</p>`)}
+${keep(`<p class="h3">Triangulation</p><p>The team's assessment was compared with two independent AI assessments (${E(a1)} and ${E(a2)}) that received the same questions and rubric. Consensus means all three scores fall within 1.5 points; question-level gaps are reported where the team differs from the AI average by 1.5 points or more, or the AIs differ from each other by 2 points or more.</p>`)}
+${keep(`<p class="h3">Sources and verification</p><p>Each AI was required to cite one to three sources per innovation type, to support every score of 2 or 3 with a source, and to state when no reliable public source exists. The team then opened one cited source from each AI on a disputed question and recorded whether it supported the score.</p>`)}
+${keep(`<p class="h3">Limitations</p><p>The assessment relies on public information and the judgment of the team and two AI models at the date shown, gathered in a time-boxed workshop. AI models can misstate facts or cite sources inaccurately; only a sample of citations was verified. Private companies disclose less, so some scores carry lower confidence. Recommendations are directional and would require further validation before investment.</p>`)}
+
+${PB}
+<!-- ===================== BACK PAGE ===================== -->
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:330pt;">
+  <tr style="page-break-inside:avoid;"><td style="background:${NAVY};padding:26pt 30pt;">
+    <p style="margin:0;font-family:Georgia,serif;font-size:20pt;color:#FFFFFF;">${E(preparedBy)}</p>
+    <p style="margin:4pt 0 14pt;font-size:10pt;color:#C9D3E0;">Innovation Portfolio Assessment &middot; ${E(company)} &middot; ${E(dateStr)}</p>
+    <p style="margin:0;font-size:1pt;line-height:1pt;border-top:1.5pt solid ${ACCENT};width:60pt;">&nbsp;</p>
+    <p style="margin:12pt 0 0;font-size:8.5pt;color:#C9D3E0;line-height:1.45;">Framework: Keeley, L., Pikkel, R., Quinn, B., &amp; Walters, H. (2013). <em>Ten Types of Innovation: The Discipline of Building Breakthroughs.</em> Hoboken, NJ: Wiley.</p>
+    <p style="margin:6pt 0 0;font-size:8.5pt;color:#C9D3E0;line-height:1.45;">This report was produced in a structured innovation workshop using public information and AI-assisted analysis. It is intended for discussion and is not investment advice.</p>
+    <p style="margin:10pt 0 0;font-size:8pt;color:#8FA0B8;">Innovation Workshop ${APP_VERSION}</p>
+  </td></tr>
 </table>
 
-${triangulationSection}
-
-<h2>Recommended Tactics</h2>
-${tacticBlocks}
-
-<h2>Detailed Question-Level Scoring</h2>
-<p style="font-size:10pt;color:#64748B;margin-top:0;">Each question scored 0 (none), 1 (low), 2 (medium), 3 (high) by all three sources. Type scores normalize to 0–10; the ten type scores sum to the Total Innovation Score (0–100).</p>
-${detailedSections}
-
-<h2>AI Strength &amp; Gap Summaries</h2>
-<h3 style="color:${ai1ColorHex};">${escapeHTML(ai1Name)}</h3>
-<p style="font-size:10.5pt;color:#334155;">${escapeHTML(ai1Parsed.summary || "(no summary paragraph found)")}</p>
-<h3 style="color:${ai2ColorHex};">${escapeHTML(ai2Name)}</h3>
-<p style="font-size:10.5pt;color:#334155;">${escapeHTML(ai2Parsed.summary || "(no summary paragraph found)")}</p>
-
-<p class="footer-note">Innovation Workshop ${APP_VERSION} · Adapted from Keeley, Pikkel, Quinn &amp; Walters · Ten Types of Innovation · 2013</p>
-
 </div>
+
+<!-- Word header/footer definitions (Word reads these; other viewers push them off-page) -->
+<table id="hdrftr" style="margin-left:50in;">
+<tr style="height:1pt;mso-height-rule:exactly"><td>
+<div style="mso-element:header" id="h1"><p style="margin:0;font-size:8pt;color:${MUTED};border-bottom:0.5pt solid ${RULE};padding-bottom:3pt;">${E(company)} &middot; Innovation Portfolio Assessment<span style="mso-tab-count:1"></span></p></div>
+<div style="mso-element:footer" id="f1"><p style="margin:0;font-size:8pt;color:${MUTED};border-top:0.5pt solid ${RULE};padding-top:3pt;">${E(preparedBy)} &middot; Confidential &nbsp;&nbsp;|&nbsp;&nbsp; Page <span style="mso-field-code:' PAGE '"></span></p></div>
+<div style="mso-element:header" id="fh1"><p style="margin:0;font-size:1pt;">&nbsp;</p></div>
+<div style="mso-element:footer" id="ff1"><p style="margin:0;font-size:1pt;">&nbsp;</p></div>
+</td></tr>
+</table>
 </body>
 </html>`;
   };
@@ -1045,6 +1834,16 @@ ${detailedSections}
     if (teamName) lines.push(`Team: ${teamName}`);
     lines.push(`AI models: ${ai1Name || "—"} · ${ai2Name || "—"}`);
     lines.push(`Generated: ${new Date().toLocaleString()}`);
+    lines.push("");
+    const ins = buildInsights();
+    lines.push(`EXECUTIVE SUMMARY`);
+    lines.push(ins.headline);
+    ins.findings.forEach((fd, i) => lines.push(`  ${i + 1}. ${fd.title}. ${fd.text}`));
+    if (tacticRecs.length) {
+      lines.push(`\nRECOMMENDATIONS`);
+      tacticRecs.forEach((r, i) => lines.push(`  ${i + 1}. ${r.name} (${r.type}) — Why: ${(r.gap || "").trim() || "—"} What it takes: ${(r.adoption || "").trim() || "—"}`));
+      lines.push(`  If adopted, strong types rise from ${ins.strongTeam} to as many as ${projectedStrong}.`);
+    }
     lines.push("");
     lines.push(`TYPE SCORES (0-10, rolled up from ${NQ} questions scored 0-3 by every source)`);
     lines.push(`${"Type".padEnd(24)}${"Team".padStart(8)}${n1.padStart(18)}${n2.padStart(18)}`);
@@ -1080,6 +1879,30 @@ ${detailedSections}
     lines.push(`AI SUMMARIES`);
     lines.push(`${ai1Name || "AI 1"}: ${ai1Parsed.summary || "(none)"}`);
     lines.push(`${ai2Name || "AI 2"}: ${ai2Parsed.summary || "(none)"}`);
+    lines.push("");
+    lines.push(`SOURCE VERIFICATION`);
+    const vq = questionGaps.find(x => x.key === verification.qKey);
+    if (!vq) lines.push("(not completed)");
+    else {
+      lines.push(`Question: ${vq.code} — ${vq.text} (Team ${vq.team}, ${n1} ${vq.ai1}, ${n2} ${vq.ai2})`);
+      [["ai1", ai1Parsed, ai1Name || "AI 1"], ["ai2", ai2Parsed, ai2Name || "AI 2"]].forEach(([w, pp, nm]) => {
+        const v = verification[w];
+        const src = v.src !== null && v.src !== undefined ? (pp.sources[vq.type] || [])[v.src] : null;
+        lines.push(`  ${nm}: ${src ? `${src.title}${src.url ? ` <${src.url}>` : ""}` : "(no source selected)"}`);
+        lines.push(`    Verdict: ${(VERDICTS.find(x => x.key === v.verdict) || {}).label || "(not recorded)"}${v.note ? ` — ${v.note}` : ""}`);
+      });
+    }
+    lines.push("");
+    lines.push(`AI CITATIONS`);
+    [[ai1Parsed, ai1Name || "AI 1"], [ai2Parsed, ai2Name || "AI 2"]].forEach(([pp, nm]) => {
+      lines.push(`\n${nm} (${TYPES_ORDER.filter(t => sourceStatus(pp, t) === "linked").length}/10 types linked)`);
+      TYPES_ORDER.forEach(t => {
+        const st = sourceStatus(pp, t);
+        lines.push(`  ${t} — ${SOURCE_STATUS[st].label}`);
+        (pp.sources[t] || []).forEach(src => lines.push(`    • ${src.title}${src.url ? ` <${src.url}>` : " (no link)"}`));
+        if (st === "declared") lines.push(`    No public source: ${pp.noSource[t]}`);
+      });
+    });
     return lines.join("\n");
   };
 
@@ -1090,23 +1913,58 @@ ${detailedSections}
 
   const safeName = () => (companyName || "company").replace(/[^a-z0-9]/gi, "_").toLowerCase();
 
-  const downloadAsWord = () => {
+  const triggerDownload = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      if (document.body.contains(a)) document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 1000);
+  };
+
+  const [wordBusy, setWordBusy] = useState(false);
+
+  // Consulting-style .docx report. Falls back to the HTML-based .doc if the docx library can't load.
+  const downloadAsWord = async () => {
+    if (wordBusy) return;
+    setWordBusy(true);
     try {
-      const html = buildWordHTML();
-      const blob = new Blob(["\ufeff", html], { type: "application/msword;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `innovation_workshop_${safeName()}.doc`;
-      a.rel = "noopener";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        if (document.body.contains(a)) document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 100);
-    } catch (e) {}
+      const lib = await import("docx");
+      const ins = buildInsights();
+      const chartPng = await drawChartPNG({
+        labels: TYPES_ORDER.map(t => t.replace("Product Performance", "Product\nPerformance").replace("Product System", "Product\nSystem").replace("Customer Engagement", "Customer\nEngagement").replace("Profit Model", "Profit\nModel")),
+        series: [
+          { name: "Team", color: "#C2410C", values: TYPES_ORDER.map(t => teamTypeFinal[t]) },
+          { name: ai1Name || "AI 1", color: "#0F766E", values: TYPES_ORDER.map(t => ai1Scores[t]) },
+          { name: ai2Name || "AI 2", color: "#6D28D9", values: TYPES_ORDER.map(t => ai2Scores[t]) },
+        ],
+      });
+      const doc = buildReportDocx(lib, {
+        ins, chartPng, NQ, APP_VERSION, STRONG_THRESHOLD, PRIVATE_CO_CAVEAT, SOURCE_STATUS,
+        TYPES_ORDER, TYPE_INFO, QUESTIONS, TACTICS, questionCode, sourceStatus, highScoreUnsourced,
+        companyName, companyContext, teamName,
+        dateStr: new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }),
+        teamTypeFinal, ai1Scores, ai2Scores, teamTotal, ai1Total, ai2Total,
+        ai1Parsed, ai2Parsed, ai1Q, ai2Q, questionScores, typeEvidence,
+        triangulation, questionGaps, verification, tacticRecs, projectedStrong,
+      });
+      const blob = await lib.Packer.toBlob(doc);
+      triggerDownload(blob, `${safeName()}_innovation_assessment.docx`);
+    } catch (e) {
+      console.error("DOCX export failed, falling back to .doc", e);
+      try {
+        const html = buildWordHTML();
+        triggerDownload(new Blob(["\ufeff", html], { type: "application/msword;charset=utf-8" }), `${safeName()}_innovation_assessment.doc`);
+      } catch (e2) { console.error(e2); }
+    } finally {
+      setWordBusy(false);
+    }
   };
 
   const downloadAsText = () => {
@@ -1326,6 +2184,8 @@ ${detailedSections}
             teamTotal={teamTotal} ai1Total={ai1Total} ai2Total={ai2Total}
             teamTypeFinal={teamTypeFinal} ai1Scores={ai1Scores} ai2Scores={ai2Scores}
             questionGaps={questionGaps}
+            ai1Parsed={ai1Parsed} ai2Parsed={ai2Parsed} ai1Q={ai1Q} ai2Q={ai2Q}
+            verification={verification} setVerification={setVerification}
             ai1Name={ai1Name} ai2Name={ai2Name}
             typeEvidence={typeEvidence}
             onContinue={() => setPhase(5)}
@@ -1415,7 +2275,7 @@ ${detailedSections}
               <ExportRow
                 icon={<FileText size={16} color={C.accentBright} />}
                 title="Microsoft Word"
-                subtitle="Formatted .doc with headings, tables & color-coded categories"
+                subtitle={wordBusy ? "Building the report…" : "Print-ready .docx: cover, contents, executive summary, recommendations & appendices"}
                 onClick={downloadAsWord}
                 primary
               />
@@ -1750,12 +2610,18 @@ function QuestionRow({ number, question, value, onChange, color }) {
 // PHASE III & IV — AI
 // ============================================================
 
-const REFORMAT_PROMPT = "Please reformat your answer as exactly one line per question, all 44 in order, in this format: CODE: SCORE | one-sentence evidence (for example, PM1: 2 | ...). Use the codes PM1–PM7, NW1–NW4, ST1–ST4, PR1–PR4, PP1–PP4, PS1–PS4, SV1–SV4, CH1–CH4, BR1–BR5, CE1–CE4. No table. Then add your strength-and-gap paragraph.";
+const REFORMAT_PROMPT = "Please reformat your answer as exactly one line per question, all 44 in order, in this format: CODE: SCORE | one-sentence evidence (for example, PM1: 2 | ...). Use the codes PM1–PM7, NW1–NW4, ST1–ST4, PR1–PR4, PP1–PP4, PS1–PS4, SV1–SV4, CH1–CH4, BR1–BR5, CE1–CE4. After each type's questions, add 1–3 lines in the form SRC-PM: Title — Publisher, date — full URL (or SRC-PM: none — reason, if no reliable public source exists). Cite only sources you actually consulted. No table. Then add your strength-and-gap paragraph.";
+const SOURCES_FOLLOWUP = "For each of the ten types, add 1–3 source lines in the form SRC-PM: Title — Publisher, date — full URL (codes SRC-PM, SRC-NW, SRC-ST, SRC-PR, SRC-PP, SRC-PS, SRC-SV, SRC-CH, SRC-BR, SRC-CE). Every score of 2 or 3 must be supported by a source for its type. Cite only sources you actually consulted — never invent a URL. If no reliable public source exists, write SRC-XX: none — reason. Repeat your full answer with the source lines included.";
 
 function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, aiName, setAiName, aiRaw, setAiRaw, aiParsed, aiQ, aiEdits, setAiEdits, aiScores, aiTotal, aiComplete, copied, setCopied, onContinue, onBack, continueLabel, otherAiName }) {
   const prompt = useMemo(() => buildAIPrompt(companyName, companyContext), [companyName, companyContext]);
   const [openTypes, setOpenTypes] = useState({});
   const [fixCopied, setFixCopied] = useState(false);
+  const [srcCopied, setSrcCopied] = useState(false);
+  const statuses = Object.fromEntries(TYPES_ORDER.map(t => [t, sourceStatus(aiParsed, t)]));
+  const statusCount = (k) => TYPES_ORDER.filter(t => statuses[t] === k).length;
+  const linkedCount = statusCount("linked");
+  const highUnsourced = TYPES_ORDER.filter(t => highScoreUnsourced(aiParsed, aiQ, t));
 
   const answeredCount = QUESTIONS.reduce((n, q, gi) => {
     const i = QUESTIONS.slice(0, gi).filter(x => x.type === q.type).length;
@@ -1880,9 +2746,28 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
             </div>
           )}
 
+          {aiRaw.trim().length > 40 && parsedCount >= NQ - 12 && linkedCount < 10 && (
+            <div style={{ marginTop: "0.75rem", padding: "0.7rem 0.85rem", backgroundColor: `${statusCount("missing") ? C.danger : C.warning}10`, border: `1px solid ${statusCount("missing") ? C.danger : C.warning}40`, borderRadius: "8px", fontSize: "0.8rem", color: C.text, lineHeight: 1.45 }}>
+              <strong style={{ color: statusCount("missing") ? C.danger : C.warning }}>Sources: {linkedCount}/10 types have a linked source.</strong>{" "}
+              {[["missing", "no source given"], ["declared", "no public source (stated by the AI)"], ["unlinked", "cited without a link"]]
+                .filter(([k]) => statusCount(k) > 0).map(([k, lbl]) => `${statusCount(k)} ${lbl}`).join(" · ")}.
+              {highUnsourced.length > 0 && <> Scores of 2–3 without a linked source: <strong>{highUnsourced.join(", ")}</strong>.</>}
+              {statusCount("declared") > 0 && <div style={{ marginTop: "0.35rem", color: C.textDim }}>{PRIVATE_CO_CAVEAT}</div>}
+              {(statusCount("missing") > 0 || statusCount("unlinked") > 0) && (
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.5rem" }}>
+                  <code className="mono" style={{ flex: 1, fontSize: "0.7rem", color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{SOURCES_FOLLOWUP}</code>
+                  <button onClick={() => copyText(SOURCES_FOLLOWUP, setSrcCopied)} className="mono" style={{ padding: "0.3rem 0.6rem", backgroundColor: srcCopied ? C.success : C.warning, color: "#111", border: "none", borderRadius: "5px", fontSize: "10px", fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>
+                    {srcCopied ? "Copied" : "Copy sources follow-up"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem", marginBottom: "0.5rem", gap: "0.5rem", flexWrap: "wrap" }}>
             <span className="label">Questions <span className="mono" style={{ color: answeredCount === NQ ? C.success : C.textDim, marginLeft: "0.35rem" }}>{answeredCount}/{NQ}</span>
               {editCount > 0 && <span style={{ color: C.warning, marginLeft: "0.5rem" }}>· {editCount} fixed by hand</span>}
+              <span style={{ marginLeft: "0.6rem" }}>· Sources <span className="mono" style={{ color: linkedCount === 10 ? C.success : aiRaw.trim() ? C.warning : C.textDim }}>{linkedCount}/10</span></span>
             </span>
             <TotalPill value={aiTotal} provisional={false} label="AI total" />
           </div>
@@ -1898,11 +2783,12 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
                 <div key={t} style={{ backgroundColor: C.surface, border: `1px solid ${missing && aiRaw.trim() ? `${C.warning}40` : C.border}`, borderRadius: "8px" }}>
                   <button
                     onClick={() => setOpenTypes(prev => ({ ...prev, [t]: !isOpen }))}
-                    style={{ width: "100%", display: "grid", gridTemplateColumns: "8px 1fr auto auto 16px", gap: "0.6rem", alignItems: "center", padding: "0.45rem 0.65rem", background: "none", border: "none", cursor: "pointer", color: C.text, textAlign: "left" }}
+                    style={{ width: "100%", display: "grid", gridTemplateColumns: "8px 1fr auto auto auto 16px", gap: "0.6rem", alignItems: "center", padding: "0.45rem 0.65rem", background: "none", border: "none", cursor: "pointer", color: C.text, textAlign: "left" }}
                   >
                     <span style={{ width: "8px", height: "8px", borderRadius: "999px", backgroundColor: catColor }} />
                     <span style={{ fontSize: "0.84rem" }}>{t}</span>
                     <span className="mono" style={{ fontSize: "10px", color: missing ? C.warning : C.textMuted }}>{got}/{qs.length}</span>
+                    {aiRaw.trim() ? <SourceBadge status={statuses[t]} /> : <span />}
                     <span className="mono" style={{ fontSize: "13px", fontWeight: 700, color: typeof aiScores[t] === "number" ? catColor : C.textMuted, minWidth: "38px", textAlign: "right" }}>
                       {typeof aiScores[t] === "number" ? aiScores[t].toFixed(1) : "—"}
                     </span>
@@ -1935,6 +2821,7 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
                           </div>
                         );
                       })}
+                      <SourceList parsed={aiParsed} typeName={t} />
                     </div>
                   )}
                 </div>
@@ -1967,7 +2854,10 @@ function PhaseAI({ phaseNum, phaseTitle, stepNum, companyName, companyContext, a
 // PHASE V — TRIANGULATION
 // ============================================================
 
-function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Avg, teamTotal, ai1Total, ai2Total, teamTypeFinal, ai1Scores, ai2Scores, questionGaps, ai1Name, ai2Name, typeEvidence, onContinue, onBack }) {
+function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Avg, teamTotal, ai1Total, ai2Total, teamTypeFinal, ai1Scores, ai2Scores, questionGaps, ai1Parsed, ai2Parsed, ai1Q, ai2Q, verification, setVerification, ai1Name, ai2Name, typeEvidence, onContinue, onBack }) {
+  const linked1 = TYPES_ORDER.filter(t => sourceStatus(ai1Parsed, t) === "linked").length;
+  const linked2 = TYPES_ORDER.filter(t => sourceStatus(ai2Parsed, t) === "linked").length;
+  const verifyDone = !!verification.qKey && !!verification.ai1.verdict && !!verification.ai2.verdict;
   const [qView, setQView] = useState("team");
   const qTeam = [...questionGaps].filter(g => Math.abs(g.teamVsAI) >= 1.5).sort((a, b) => Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI));
   const qAI = [...questionGaps].filter(g => g.aiSpread >= 2).sort((a, b) => b.aiSpread - a.aiSpread);
@@ -1991,8 +2881,8 @@ function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Av
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.85rem", margin: "1.5rem 0" }}>
         <AvgTile label="Team" total={teamTotal} value={teamAvg} strong={countStrong(teamTypeFinal)} color={C.experience} />
-        <AvgTile label={ai1Name} total={ai1Total} value={ai1Avg} strong={countStrong(ai1Scores)} color={C.offering} />
-        <AvgTile label={ai2Name} total={ai2Total} value={ai2Avg} strong={countStrong(ai2Scores)} color={C.config} />
+        <AvgTile label={ai1Name} total={ai1Total} value={ai1Avg} strong={countStrong(ai1Scores)} color={C.offering} extra={`linked sources ${linked1}/10`} extraWarn={linked1 < 10} />
+        <AvgTile label={ai2Name} total={ai2Total} value={ai2Avg} strong={countStrong(ai2Scores)} color={C.config} extra={`linked sources ${linked2}/10`} extraWarn={linked2 < 10} />
       </div>
 
       <Card style={{ marginBottom: "1.5rem" }}>
@@ -2096,6 +2986,13 @@ function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Av
         </div>
       </Card>
 
+      <SourceCheck
+        questionGaps={questionGaps}
+        ai1Parsed={ai1Parsed} ai2Parsed={ai2Parsed}
+        ai1Name={ai1Name} ai2Name={ai2Name}
+        verification={verification} setVerification={setVerification}
+      />
+
       <Card style={{ marginTop: "1.5rem", borderColor: `${C.config}40`, backgroundColor: `${C.config}08` }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
           <Sparkles size={14} color={C.config} />
@@ -2111,13 +3008,106 @@ function PhaseTriangulation({ companyName, triangulation, teamAvg, ai1Avg, ai2Av
 
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2rem" }}>
         <SecondaryButton onClick={onBack}><ChevronLeft size={15} /> Back</SecondaryButton>
-        <PrimaryButton onClick={onContinue}>Tactic recommendations <ChevronRight size={15} /></PrimaryButton>
+        <PrimaryButton onClick={onContinue} disabled={!verifyDone}>
+          {verifyDone ? "Tactic recommendations" : "Complete the source check"} <ChevronRight size={15} />
+        </PrimaryButton>
       </div>
     </div>
   );
 }
 
-function AvgTile({ label, total, value, strong, color }) {
+// VERIFICATION STEP — open and check one cited source per AI on a question where they disagree.
+function SourceCheck({ questionGaps, ai1Parsed, ai2Parsed, ai1Name, ai2Name, verification, setVerification }) {
+  const candidates = [...questionGaps].sort((a, b) => b.aiSpread - a.aiSpread || Math.abs(b.teamVsAI) - Math.abs(a.teamVsAI));
+  const disagree = candidates.filter(g => g.aiSpread >= 1);
+  const options = disagree.length ? disagree : candidates;
+  const qKey = verification.qKey && options.some(o => o.key === verification.qKey) ? verification.qKey : "";
+  const g = options.find(o => o.key === qKey);
+
+  const setQ = (k) => setVerification(prev => ({ ...initialVerification(), qKey: k }));
+  const setAI = (which, patch) => setVerification(prev => ({ ...prev, [which]: { ...prev[which], ...patch } }));
+
+  const col = (which) => which === "ai1" ? C.offering : C.config;
+
+  const AIColumn = ({ which, parsed, name, score, ev }) => {
+    const v = verification[which];
+    const list = parsed.sources[g.type] || [];
+    const status = sourceStatus(parsed, g.type);
+    return (
+      <div style={{ padding: "0.75rem 0.85rem", backgroundColor: C.surface2, border: `1px solid ${col(which)}40`, borderTop: `2px solid ${col(which)}`, borderRadius: "8px", minWidth: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "0.5rem" }}>
+          <span className="mono" style={{ fontSize: "11px", fontWeight: 700, color: col(which) }}>{name}</span>
+          <span className="mono" style={{ fontSize: "11px", color: C.textDim }}>scored <strong style={{ color: col(which), fontSize: "14px" }}>{score}</strong>/3</span>
+        </div>
+        {ev && <div style={{ fontSize: "0.76rem", color: C.textDim, fontStyle: "italic", margin: "0.3rem 0 0.5rem", lineHeight: 1.4 }}>{ev}</div>}
+        <div className="label" style={{ fontSize: "9px", margin: "0.4rem 0 0.3rem" }}>1 · Open one of its {g.type} sources</div>
+        {list.length === 0 && (
+          <div style={{ fontSize: "0.76rem", color: status === "declared" ? C.warning : C.danger, lineHeight: 1.4 }}>
+            {status === "declared" ? <>No public source stated: <span style={{ color: C.textDim }}>{parsed.noSource[g.type]}</span></> : "No source cited for this type."}
+          </div>
+        )}
+        {list.map((src, i) => (
+          <label key={i} style={{ display: "flex", gap: "0.45rem", alignItems: "flex-start", fontSize: "0.78rem", lineHeight: 1.4, padding: "0.2rem 0", cursor: "pointer", color: C.text }}>
+            <input type="radio" name={`src-${which}`} checked={v.src === i} onChange={() => setAI(which, { src: i })} style={{ marginTop: "3px" }} />
+            <span style={{ minWidth: 0, wordBreak: "break-word" }}>
+              {src.url
+                ? <a href={src.url} target="_blank" rel="noopener noreferrer" onClick={() => setAI(which, { src: i })} style={{ color: C.accentBright, textDecoration: "none" }}>{src.title || src.url} ↗</a>
+                : <>{src.title} <em style={{ color: C.warning }}>(no link — search for it)</em></>}
+            </span>
+          </label>
+        ))}
+        <div className="label" style={{ fontSize: "9px", margin: "0.6rem 0 0.3rem" }}>2 · Does it back up the score?</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
+          {VERDICTS.filter(vd => list.length ? vd.key !== "nosource" : true).map(vd => {
+            const on = v.verdict === vd.key;
+            const tc = toneColor(vd.tone);
+            return (
+              <button key={vd.key} onClick={() => setAI(which, { verdict: vd.key })} style={{
+                padding: "0.3rem 0.55rem", fontSize: "0.72rem", borderRadius: "999px", cursor: "pointer",
+                border: `1px solid ${on ? tc : C.border}`, backgroundColor: on ? `${tc}22` : "transparent", color: on ? tc : C.textDim,
+              }}>{vd.label}</button>
+            );
+          })}
+        </div>
+        <input type="text" value={v.note} onChange={(e) => setAI(which, { note: e.target.value })}
+          placeholder="What did the source actually say? (one line)" className="iw-input"
+          style={{ marginTop: "0.5rem", fontSize: "0.78rem", padding: "0.4rem 0.6rem" }} />
+      </div>
+    );
+  };
+
+  return (
+    <Card style={{ marginTop: "1.5rem", borderColor: `${C.accent}50` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem" }}>
+        <CheckCircle2 size={14} color={C.accentBright} />
+        <span className="label" style={{ color: C.accentBright }}>Verification step · Check one source per AI · 2 minutes</span>
+      </div>
+      <p style={{ fontSize: "0.86rem", color: C.textDim, margin: "0 0 0.85rem", lineHeight: 1.5 }}>
+        Pick a question where the two AIs disagree. For each AI, open one source it cited for that type and decide whether the source actually supports its score. A citation nobody opens isn't traceable.
+      </p>
+      <select value={qKey} onChange={(e) => setQ(e.target.value)} className="iw-select" style={{ width: "100%", fontFamily: "inherit", fontSize: "0.85rem", padding: "0.55rem 0.7rem" }}>
+        <option value="">Choose a question{disagree.length ? " where the AIs disagree" : ""}…</option>
+        {options.map(o => (
+          <option key={o.key} value={o.key}>{o.code} · AI 1: {o.ai1} vs AI 2: {o.ai2} · {o.text}</option>
+        ))}
+      </select>
+      {g && (
+        <>
+          <div style={{ fontSize: "0.88rem", color: C.text, margin: "0.75rem 0 0.6rem", lineHeight: 1.4 }}>
+            <span className="mono" style={{ color: C.textMuted, marginRight: "0.4rem" }}>{g.code}</span>{g.text}
+            <span className="mono" style={{ fontSize: "11px", color: C.textDim, marginLeft: "0.5rem" }}>Team <strong style={{ color: C.experience }}>{g.team}</strong></span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "0.85rem" }}>
+            {AIColumn({ which: "ai1", parsed: ai1Parsed, name: ai1Name, score: g.ai1, ev: g.ev1 })}
+            {AIColumn({ which: "ai2", parsed: ai2Parsed, name: ai2Name, score: g.ai2, ev: g.ev2 })}
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function AvgTile({ label, total, value, strong, color, extra, extraWarn }) {
   return (
     <div style={{
       backgroundColor: C.surface,
@@ -2135,6 +3125,7 @@ function AvgTile({ label, total, value, strong, color }) {
       </div>
       <div className="mono" style={{ fontSize: "10px", color: C.textDim, marginTop: "0.45rem" }}>
         avg {value !== null && value !== undefined ? value.toFixed(2) : "—"}/10 · strong types (≥{STRONG_THRESHOLD}) <strong style={{ color }}>{strong}</strong>
+        {extra && <> · <span style={{ color: extraWarn ? C.warning : C.success }}>{extra}</span></>}
       </div>
     </div>
   );
@@ -2695,6 +3686,43 @@ function Field({ label, hint, required, children }) {
         {hint && <span className="mono" style={{ fontSize: "10px", color: C.textMuted }}>{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+const toneColor = (tone) => ({ success: C.success, warning: C.warning, danger: C.danger })[tone] || C.textDim;
+
+function SourceBadge({ status }) {
+  const st = SOURCE_STATUS[status];
+  const col = toneColor(st.tone);
+  return (
+    <span className="mono" title={st.label} style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.04em", padding: "0.1rem 0.35rem", borderRadius: "4px", color: col, border: `1px solid ${col}50`, backgroundColor: `${col}15`, whiteSpace: "nowrap" }}>
+      {st.short}
+    </span>
+  );
+}
+
+// Sources one AI cited for one type, with links that open in a new tab.
+function SourceList({ parsed, typeName, compact }) {
+  const list = parsed.sources[typeName] || [];
+  const status = sourceStatus(parsed, typeName);
+  return (
+    <div style={{ marginTop: compact ? 0 : "0.35rem", padding: compact ? 0 : "0.45rem 0.5rem", borderTop: compact ? "none" : `1px solid ${C.border}` }}>
+      {!compact && <div className="label" style={{ fontSize: "9px", marginBottom: "0.25rem" }}>Sources · {SOURCE_STATUS[status].label}</div>}
+      {list.map((src, i) => (
+        <div key={i} style={{ fontSize: "0.74rem", lineHeight: 1.4, color: C.textDim, display: "flex", gap: "0.35rem" }}>
+          <span className="mono" style={{ color: C.textMuted }}>{i + 1}.</span>
+          {src.url
+            ? <a href={src.url} target="_blank" rel="noopener noreferrer" style={{ color: C.accentBright, textDecoration: "none", wordBreak: "break-word" }}>{src.title || src.url} ↗</a>
+            : <span style={{ wordBreak: "break-word" }}>{src.title} <em style={{ color: C.warning }}>(no link)</em></span>}
+        </div>
+      ))}
+      {status === "declared" && (
+        <div style={{ fontSize: "0.74rem", lineHeight: 1.4, color: C.warning }}>
+          No public source: <span style={{ color: C.textDim }}>{parsed.noSource[typeName]}</span>
+        </div>
+      )}
+      {status === "missing" && <div style={{ fontSize: "0.74rem", color: C.danger }}>No source line for this type.</div>}
     </div>
   );
 }
